@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>realtime.chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ==================== AUTH VIEW ==================== -->
+  <div id="auth-view" class="view auth-bg">
+    <div class="auth-card">
+      <div class="auth-header">
+        <div class="logo-mark">&gt;_</div>
+        <h1>realtime.chat</h1>
+        <p class="auth-subtitle">FastAPI &middot; WebSockets &middot; Redis pub/sub</p>
+      </div>
+
+      <div class="tab-row">
+        <button class="tab active" data-tab="login">Login</button>
+        <button class="tab" data-tab="register">Register</button>
+      </div>
+
+      <form id="login-form" class="auth-form">
+        <input type="text" name="username" placeholder="username" autocomplete="username" required>
+        <input type="password" name="password" placeholder="password" autocomplete="current-password" required>
+        <button type="submit" class="btn-primary">Sign in</button>
+      </form>
+
+      <form id="register-form" class="auth-form hidden">
+        <input type="text" name="username" placeholder="username (3+ chars)" autocomplete="username" required>
+        <input type="email" name="email" placeholder="email" autocomplete="email" required>
+        <input type="password" name="password" placeholder="password (6+ chars)" autocomplete="new-password" required>
+        <button type="submit" class="btn-primary">Create account</button>
+      </form>
+
+      <div id="auth-error" class="auth-error hidden"></div>
+    </div>
+  </div>
+
+  <!-- ==================== CHAT VIEW ==================== -->
+  <div id="chat-view" class="view hidden">
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="logo-mark small">&gt;_</div>
+        <span class="sidebar-title">realtime.chat</span>
+        <button id="logout-btn" class="btn-ghost" title="Sign out">logout</button>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-label">Rooms</div>
+        <div id="room-list" class="room-list"></div>
+        <form id="create-room-form" class="create-room-form">
+          <input type="text" id="room-name-input" placeholder="new room name" minlength="3" required>
+          <button type="submit" class="btn-icon" title="Create room">+</button>
+        </form>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="section-label">Online</div>
+        <div id="online-list" class="online-list"></div>
+      </div>
+    </aside>
+
+    <main id="chat-main">
+      <div id="room-header" class="room-header">
+        <span id="current-room" class="current-room">Select a room</span>
+        <span id="member-count" class="member-count"></span>
+      </div>
+
+      <div id="load-more-wrap" class="load-more-wrap hidden">
+        <button id="load-more-btn" class="btn-ghost">Load older messages</button>
+      </div>
+
+      <div id="messages" class="messages"></div>
+
+      <div id="typing-indicator" class="typing-indicator hidden">
+        <span class="typing-text"></span>
+        <span class="typing-dots">
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+        </span>
+      </div>
+
+      <form id="message-form" class="message-form">
+        <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" disabled>
+        <button type="submit" class="btn-primary" id="send-btn" disabled>Send</button>
+      </form>
+    </main>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

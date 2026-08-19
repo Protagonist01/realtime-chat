@@ -1,0 +1,10 @@
+.env
+chat.db
+chat.db-journal
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+server.log
+server.err

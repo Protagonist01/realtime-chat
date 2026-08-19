@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.env
+chat.db
+chat.db-journal
+server.log
+server.err
+tests/
+.git/
+.gitignore
+.env.example
+docker-compose.yml
+BUILD_BOOK.md
+.pytest_cache/
+.venv/
