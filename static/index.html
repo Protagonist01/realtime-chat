@@ -44,10 +44,13 @@
 
   <!-- ==================== CHAT VIEW ==================== -->
   <div id="chat-view" class="view hidden">
+    <div id="sidebar-overlay" class="sidebar-overlay"></div>
+
     <aside id="sidebar">
       <div class="sidebar-header">
         <div class="logo-mark small">&gt;_</div>
         <span class="sidebar-title">realtime.chat</span>
+        <button id="sidebar-close" class="btn-icon-subtle mobile-only" title="Close menu" aria-label="Close menu">✕</button>
         <button id="logout-btn" class="btn-ghost" title="Sign out">logout</button>
       </div>
 
@@ -68,8 +71,17 @@
 
     <main id="chat-main">
       <div id="room-header" class="room-header">
-        <span id="current-room" class="current-room">Select a room</span>
-        <span id="member-count" class="member-count"></span>
+        <button id="sidebar-toggle" class="btn-icon-subtle mobile-only" title="Open menu" aria-label="Open menu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+        </button>
+        <div class="room-header-info">
+          <span id="current-room" class="current-room">Select a room</span>
+          <span id="member-count" class="member-count"></span>
+        </div>
       </div>
 
       <div id="load-more-wrap" class="load-more-wrap hidden">

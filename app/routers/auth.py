@@ -34,7 +34,11 @@ async def login(
     form: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ) -> Token:
-    user = await db.scalar(select(User).where(User.username == form.username))
+    user = await db.scalar(
+        select(User).where(
+            (User.username == form.username) | (User.email == form.username)
+        )
+    )
     if user is None or not verify_password(form.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
     return Token(access_token=create_access_token(user.id))

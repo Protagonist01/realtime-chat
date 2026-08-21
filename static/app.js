@@ -203,6 +203,7 @@ async function switchRoom(roomId, roomName) {
   // Connect WebSocket
   connectWS(roomId);
   renderRooms();
+  closeSidebar();
 }
 
 // ==================== Messages ====================
@@ -461,9 +462,25 @@ function scrollToBottom() {
   container.scrollTop = container.scrollHeight;
 }
 
+// ==================== Mobile Sidebar Drawer ====================
+function openSidebar() {
+  document.getElementById('sidebar')?.classList.add('open');
+  document.getElementById('sidebar-overlay')?.classList.add('open');
+}
+
+function closeSidebar() {
+  document.getElementById('sidebar')?.classList.remove('open');
+  document.getElementById('sidebar-overlay')?.classList.remove('open');
+}
+
+document.getElementById('sidebar-toggle')?.addEventListener('click', openSidebar);
+document.getElementById('sidebar-close')?.addEventListener('click', closeSidebar);
+document.getElementById('sidebar-overlay')?.addEventListener('click', closeSidebar);
+
 // ==================== Init ====================
 if (state.token && state.username) {
   showChat();
 } else {
   showAuth();
 }
+
