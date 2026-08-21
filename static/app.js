@@ -224,14 +224,16 @@ async function loadMessages(roomId, before = null) {
       const scrollHeightBefore = container.scrollHeight;
       const reversed = [...msgs].reverse();
       for (const msg of reversed) {
-        container.prepend(renderMessage(msg));
+        const el = renderMessage(msg, container.firstElementChild);
+        container.prepend(el);
       }
       // Maintain scroll position
       container.scrollTop += container.scrollHeight - scrollHeightBefore;
     } else {
       const reversed = [...msgs].reverse();
       for (const msg of reversed) {
-        container.appendChild(renderMessage(msg));
+        const el = renderMessage(msg, container.lastElementChild);
+        container.appendChild(el);
       }
       scrollToBottom();
     }
@@ -257,16 +259,24 @@ document.getElementById('load-more-btn').addEventListener('click', () => {
   }
 });
 
-function renderMessage(msg) {
+function renderMessage(msg, prevEl = null) {
   const el = document.createElement('div');
-  el.className = 'message';
+  const isSelf = msg.username === state.username;
+  el.className = 'message' + (isSelf ? ' self' : '');
+
+  // Group consecutive messages from the same author
+  if (!isSelf && prevEl && prevEl.classList.contains('message') &&
+      !prevEl.classList.contains('message-system') &&
+      prevEl.querySelector('.message-author')?.textContent === msg.username) {
+    el.classList.add('same-author');
+  }
 
   const header = document.createElement('div');
   header.className = 'message-header';
 
   const author = document.createElement('span');
   author.className = 'message-author';
-  if (msg.username === state.username) author.classList.add('self');
+  if (isSelf) author.classList.add('self');
   author.textContent = msg.username;
   header.appendChild(author);
 
@@ -278,7 +288,11 @@ function renderMessage(msg) {
 
   const content = document.createElement('div');
   content.className = 'message-content';
-  content.textContent = msg.content;
+
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble';
+  bubble.textContent = msg.content;
+  content.appendChild(bubble);
   el.appendChild(content);
 
   return el;
@@ -341,7 +355,7 @@ function appendMessage(event) {
     username: event.username,
     content: event.content,
     created_at: event.created_at,
-  }));
+  }, container.lastElementChild));
   if (isScrolledToBottom()) {
     scrollToBottom();
   }
@@ -450,6 +464,26 @@ document.getElementById('message-form').addEventListener('submit', (e) => {
   state.myTypingActive = false;
   if (state.myTypingTimer) clearTimeout(state.myTypingTimer);
 });
+
+// ==================== Theme Toggle ====================
+const THEME_KEY = 'chat-theme';
+function applyTheme(theme) {
+  if (theme === 'dark' || theme === 'light') {
+    document.documentElement.dataset.theme = theme;
+  } else {
+    delete document.documentElement.dataset.theme;
+  }
+}
+
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const current = document.documentElement.dataset.theme || (prefersDark ? 'dark' : 'light');
+  const next = current === 'dark' ? 'light' : 'dark';
+  applyTheme(next);
+  localStorage.setItem(THEME_KEY, next);
+});
+
+applyTheme(localStorage.getItem(THEME_KEY));
 
 // ==================== Scroll Helpers ====================
 function isScrolledToBottom() {
