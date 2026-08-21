@@ -18,12 +18,8 @@ const state = {
 async function api(method, path, body = null) {
   const headers = { 'Authorization': `Bearer ${state.token}` };
   if (body) {
-    if (body instanceof FormData) {
-      for (const [k, v] of body.entries()) headers[k] !== undefined;
-    } else {
-      headers['Content-Type'] = 'application/json';
-      body = JSON.stringify(body);
-    }
+    headers['Content-Type'] = 'application/json';
+    body = JSON.stringify(body);
   }
   const res = await fetch(path, { method, headers, body });
   if (!res.ok) {
@@ -82,9 +78,6 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     const data = await apiForm('POST', '/api/auth/login', fd);
     localStorage.setItem('token', data.access_token);
     state.token = data.access_token;
-    const me = await api('GET', '/api/auth/me').catch(() => null);
-    // The server doesn't have /api/auth/me, so decode the JWT to get username
-    // from the form input instead.
     state.username = form.username.value;
     localStorage.setItem('username', state.username);
     showChat();
@@ -168,11 +161,19 @@ document.getElementById('create-room-form').addEventListener('submit', async (e)
 });
 
 async function switchRoom(roomId, roomName) {
-  // Close old WS
+  // Close old WS and clear stale typing state
   if (state.ws) {
     state.ws.close();
     state.ws = null;
   }
+  state.myTypingActive = false;
+  if (state.myTypingTimer) {
+    clearTimeout(state.myTypingTimer);
+    state.myTypingTimer = null;
+  }
+  state.typingTimeouts.forEach(t => clearTimeout(t));
+  state.typingTimeouts.clear();
+  document.getElementById('typing-indicator').classList.add('hidden');
   // If not a member, try to join
   const room = state.rooms.find(r => r.id === roomId);
   if (!room) {
@@ -211,31 +212,37 @@ async function loadMessages(roomId, before = null) {
     if (before) path += `&before=${before}`;
     const msgs = await api('GET', path);
     const container = document.getElementById('messages');
-    const wasScrolledToBottom = isScrolledToBottom();
+
+    // API returns newest-first (id DESC). Capture the oldest message ID
+    // for cursor-based pagination BEFORE reversing for display.
+    const originalLength = msgs.length;
+    const oldestId = originalLength > 0 ? msgs[originalLength - 1].id : null;
 
     if (before) {
-      // Prepend older messages
+      // Prepend older messages (reverse to get oldest-first for DOM order)
       const scrollHeightBefore = container.scrollHeight;
-      for (const msg of msgs.reverse()) {
+      const reversed = [...msgs].reverse();
+      for (const msg of reversed) {
         container.prepend(renderMessage(msg));
       }
       // Maintain scroll position
       container.scrollTop += container.scrollHeight - scrollHeightBefore;
     } else {
-      for (const msg of msgs.reverse()) {
+      const reversed = [...msgs].reverse();
+      for (const msg of reversed) {
         container.appendChild(renderMessage(msg));
       }
       scrollToBottom();
     }
 
-    if (msgs.length > 0) {
-      state.oldestMessageId = msgs[0].id;
+    if (oldestId !== null) {
+      state.oldestMessageId = oldestId;
       document.getElementById('load-more-wrap').classList.remove('hidden');
     } else {
       document.getElementById('load-more-wrap').classList.add('hidden');
     }
 
-    if (msgs.length < 50) {
+    if (originalLength < 50) {
       document.getElementById('load-more-wrap').classList.add('hidden');
     }
   } catch (err) {
@@ -420,7 +427,7 @@ function renderOnlineList() {
     name.textContent = username;
     if (username === state.username) {
       name.style.fontWeight = '600';
-      name.style.color = 'var(--green)';
+      name.style.color = 'var(--accent)';
     }
     el.appendChild(dot);
     el.appendChild(name);
