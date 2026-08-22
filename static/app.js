@@ -12,6 +12,7 @@ const state = {
   myTypingActive: false,
   myTypingTimer: null,
   oldestMessageId: null,
+  replyTo: null,
 };
 
 // ==================== API Helpers ====================
@@ -140,7 +141,15 @@ function renderRooms() {
     const el = document.createElement('div');
     el.className = 'room-item';
     if (room.id === state.currentRoomId) el.classList.add('active');
+    if (!room.is_member) el.classList.add('not-member');
     el.textContent = room.name;
+    if (!room.is_member) {
+      const badge = document.createElement('span');
+      badge.className = 'join-badge';
+      badge.textContent = 'join';
+      el.appendChild(badge);
+    }
+    el.title = room.is_member ? `#${room.name}` : `#${room.name} (click to join)`;
     el.addEventListener('click', () => switchRoom(room.id, room.name));
     list.appendChild(el);
   }
@@ -152,6 +161,7 @@ document.getElementById('create-room-form').addEventListener('submit', async (e)
   try {
     const room = await api('POST', '/api/rooms', { name: input.value, is_private: false });
     state.rooms.push(room);
+    state.rooms.sort((a, b) => a.name.localeCompare(b.name));
     input.value = '';
     renderRooms();
     switchRoom(room.id, room.name);
@@ -174,12 +184,15 @@ async function switchRoom(roomId, roomName) {
   state.typingTimeouts.forEach(t => clearTimeout(t));
   state.typingTimeouts.clear();
   document.getElementById('typing-indicator').classList.add('hidden');
-  // If not a member, try to join
-  const room = state.rooms.find(r => r.id === roomId);
-  if (!room) {
+  cancelReply();
+
+  // If not a member yet, join first
+  let room = state.rooms.find(r => r.id === roomId);
+  if (!room || !room.is_member) {
     try {
-      const joined = await api('POST', `/api/rooms/${roomId}/join`);
-      state.rooms.push(joined);
+      room = await api('POST', `/api/rooms/${roomId}/join`);
+      const idx = state.rooms.findIndex(r => r.id === roomId);
+      if (idx >= 0) state.rooms[idx] = room; else state.rooms.push(room);
     } catch (err) {
       toast('Cannot join room: ' + err.message, true);
       return;
@@ -263,6 +276,7 @@ function renderMessage(msg, prevEl = null) {
   const el = document.createElement('div');
   const isSelf = msg.username === state.username;
   el.className = 'message' + (isSelf ? ' self' : '');
+  el.dataset.messageId = msg.id;
 
   // Group consecutive messages from the same author
   if (!isSelf && prevEl && prevEl.classList.contains('message') &&
@@ -286,16 +300,68 @@ function renderMessage(msg, prevEl = null) {
   header.appendChild(time);
   el.appendChild(header);
 
+  // Reply action button (visible on hover)
+  const replyBtn = document.createElement('button');
+  replyBtn.type = 'button';
+  replyBtn.className = 'reply-btn';
+  replyBtn.title = 'Reply';
+  replyBtn.setAttribute('aria-label', 'Reply to this message');
+  replyBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"></polyline><path d="M20 18v-2a4 4 0 0 0-4-4H4"></path></svg>';
+  replyBtn.addEventListener('click', () => startReply(msg));
+  el.appendChild(replyBtn);
+
   const content = document.createElement('div');
   content.className = 'message-content';
 
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
-  bubble.textContent = msg.content;
+
+  // Quoted reply context
+  if (msg.reply_to_username) {
+    const quote = document.createElement('div');
+    quote.className = 'reply-quote';
+    const qAuthor = document.createElement('span');
+    qAuthor.className = 'reply-quote-author';
+    qAuthor.textContent = msg.reply_to_username;
+    const qText = document.createElement('span');
+    qText.className = 'reply-quote-text';
+    qText.textContent = msg.reply_to_content || '';
+    quote.appendChild(qAuthor);
+    quote.appendChild(qText);
+    bubble.appendChild(quote);
+  }
+
+  const text = document.createElement('span');
+  text.textContent = msg.content;
+  bubble.appendChild(text);
+
   content.appendChild(bubble);
   el.appendChild(content);
 
   return el;
+}
+
+// ==================== Replies ====================
+function startReply(msg) {
+  state.replyTo = {
+    id: msg.id,
+    username: msg.username,
+    content: msg.content || msg.reply_to_content || '',
+  };
+  const preview = document.getElementById('reply-preview');
+  preview.querySelector('.reply-preview-label').textContent =
+    `Replying to ${msg.username}`;
+  preview.querySelector('.reply-preview-text').textContent =
+    state.replyTo.content.length > 80
+      ? state.replyTo.content.slice(0, 79) + '…'
+      : state.replyTo.content;
+  preview.classList.remove('hidden');
+  document.getElementById('message-input').focus();
+}
+
+function cancelReply() {
+  state.replyTo = null;
+  document.getElementById('reply-preview').classList.add('hidden');
 }
 
 function formatTime(iso) {
@@ -352,9 +418,13 @@ function handleEvent(event) {
 function appendMessage(event) {
   const container = document.getElementById('messages');
   container.appendChild(renderMessage({
+    id: event.message_id,
     username: event.username,
     content: event.content,
     created_at: event.created_at,
+    reply_to_id: event.reply_to_id,
+    reply_to_username: event.reply_to_username,
+    reply_to_content: event.reply_to_content,
   }, container.lastElementChild));
   if (isScrolledToBottom()) {
     scrollToBottom();
@@ -457,13 +527,18 @@ document.getElementById('message-form').addEventListener('submit', (e) => {
   const content = input.value.trim();
   if (!content || !state.ws || state.ws.readyState !== WebSocket.OPEN) return;
 
-  state.ws.send(JSON.stringify({ type: 'message', content }));
+  const payload = { type: 'message', content };
+  if (state.replyTo) payload.reply_to_id = state.replyTo.id;
+  state.ws.send(JSON.stringify(payload));
   input.value = '';
+  cancelReply();
 
   // Reset typing state
   state.myTypingActive = false;
   if (state.myTypingTimer) clearTimeout(state.myTypingTimer);
 });
+
+document.getElementById('reply-cancel').addEventListener('click', cancelReply);
 
 // ==================== Theme Toggle ====================
 const THEME_KEY = 'chat-theme';

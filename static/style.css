@@ -427,6 +427,20 @@ input:focus-visible {
 }
 .room-item.active::before { color: var(--accent-text); }
 
+/* Rooms the user hasn't joined yet */
+.room-item.not-member { opacity: 0.75; }
+.join-badge {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
 .create-room-form {
   display: flex;
   gap: 6px;
@@ -635,6 +649,117 @@ input:focus-visible {
   animation: msgIn 0.25s var(--ease-out);
 }
 
+/* Reply action (appears on hover) */
+.message {
+  position: relative;
+}
+.reply-btn {
+  position: absolute;
+  top: -4px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: opacity 0.15s ease, transform 0.15s var(--ease-spring),
+    background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: var(--shadow-sm);
+  z-index: 2;
+}
+.message:hover .reply-btn,
+.reply-btn:focus-visible {
+  opacity: 1;
+  transform: scale(1);
+}
+.reply-btn:hover {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+}
+.message.self .reply-btn { left: 8px; right: auto; }
+
+/* Quoted reply inside a bubble */
+.reply-quote {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 10px;
+  margin-bottom: 6px;
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-softer);
+  font-size: 12px;
+  overflow: hidden;
+}
+.message.self .reply-quote {
+  border-left-color: currentColor;
+  background: rgba(255, 255, 255, 0.18);
+}
+.reply-quote-author {
+  font-weight: 800;
+  color: var(--accent-text);
+}
+.message.self .reply-quote-author {
+  color: inherit;
+  opacity: 0.85;
+}
+.reply-quote-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.85;
+}
+
+/* Reply preview bar above the composer */
+.reply-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 20px 4px;
+  padding: 7px 8px 7px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  animation: formSwap 0.2s var(--ease-out);
+  flex-shrink: 0;
+}
+.reply-preview.hidden { display: none !important; }
+.reply-preview-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.reply-preview-label {
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--accent-text);
+}
+.reply-preview-text {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#reply-cancel {
+  width: 28px;
+  height: 28px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
 /* Typing indicator */
 .typing-indicator {
   display: flex;
@@ -805,6 +930,10 @@ input:focus-visible {
   .message-form {
     padding: 10px 14px calc(10px + env(safe-area-inset-bottom, 0px));
     gap: 6px;
+  }
+
+  .reply-preview {
+    margin: 0 14px 4px;
   }
 
   .message-form input {

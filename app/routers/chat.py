@@ -32,6 +32,7 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import AsyncSessionLocal
 from app.models import Message, Room, User, room_members
@@ -112,8 +113,30 @@ async def chat_ws(websocket: WebSocket, room_id: int) -> None:
                 if not cmd.content or len(cmd.content) > 4000:
                     await _send_error(websocket, room_id, "Message content required (1-4000 chars)")
                     continue
+
+                # Resolve the replied-to message (must exist in the same room).
+                # Eager-load the author so username is readable after the
+                # session closes.
+                replied = None
+                if cmd.reply_to_id is not None:
+                    async with AsyncSessionLocal() as db:
+                        res = await db.execute(
+                            select(Message)
+                            .options(selectinload(Message.user))
+                            .where(Message.id == cmd.reply_to_id)
+                        )
+                        replied = res.scalar_one_or_none()
+                    if replied is None or replied.room_id != room_id:
+                        await _send_error(websocket, room_id, "Replied-to message not found in this room")
+                        continue
+
                 async with AsyncSessionLocal() as db:
-                    message = Message(room_id=room_id, user_id=user.id, content=cmd.content)
+                    message = Message(
+                        room_id=room_id,
+                        user_id=user.id,
+                        content=cmd.content,
+                        reply_to_id=replied.id if replied else None,
+                    )
                     db.add(message)
                     await db.commit()
                     await db.refresh(message)
@@ -125,6 +148,10 @@ async def chat_ws(websocket: WebSocket, room_id: int) -> None:
                         content=message.content,
                         message_id=message.id,
                         created_at=message.created_at,
+                        reply_to_id=message.reply_to_id,
+                        # Reply context for rendering the quote client-side
+                        reply_to_username=replied.username if replied else None,
+                        reply_to_content=replied.content[:119] + "…" if replied and len(replied.content) > 120 else (replied.content if replied else None),
                     )
                 await bridge.publish(room_id, event)
 

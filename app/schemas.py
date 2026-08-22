@@ -45,6 +45,7 @@ class RoomOut(BaseModel):
     is_private: bool
     created_by: int
     created_at: datetime
+    is_member: bool = False
 
 
 class RoomMembership(BaseModel):
@@ -60,6 +61,10 @@ class MessageOut(BaseModel):
     username: str
     content: str
     created_at: datetime
+    reply_to_id: int | None = None
+    # Denormalized context of the replied-to message for rendering the quote
+    reply_to_username: str | None = None
+    reply_to_content: str | None = None
 
 
 class MessageCreate(BaseModel):
@@ -76,6 +81,9 @@ class ChatEvent(BaseModel):
     content: str | None = None
     message_id: int | None = None
     created_at: datetime | None = None
+    reply_to_id: int | None = None
+    reply_to_username: str | None = None
+    reply_to_content: str | None = None
     # For "presence" events: {user_id_as_string: username} of everyone online
     # in this room. Dict keys are strings because JSON object keys are always
     # strings; the frontend iterates via Object.entries().
@@ -86,3 +94,4 @@ class ChatEvent(BaseModel):
 class ClientCommand(BaseModel):
     type: str  # "message" | "typing"
     content: str | None = None
+    reply_to_id: int | None = None

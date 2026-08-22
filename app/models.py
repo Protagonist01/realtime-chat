@@ -47,10 +47,15 @@ class Message(Base):
     room_id: Mapped[int] = mapped_column(ForeignKey("rooms.id", ondelete="CASCADE"), index=True, nullable=False)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    reply_to_id: Mapped[int | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     room: Mapped["Room"] = relationship(back_populates="messages")
     user: Mapped["User"] = relationship(back_populates="messages")
+    # Self-referential reply link; remote_side marks the "many" side as this column
+    replied_to: Mapped["Message | None"] = relationship(remote_side=[id])
 
     @property
     def username(self) -> str:
