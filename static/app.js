@@ -540,26 +540,6 @@ document.getElementById('message-form').addEventListener('submit', (e) => {
 
 document.getElementById('reply-cancel').addEventListener('click', cancelReply);
 
-// ==================== Theme Toggle ====================
-const THEME_KEY = 'chat-theme';
-function applyTheme(theme) {
-  if (theme === 'dark' || theme === 'light') {
-    document.documentElement.dataset.theme = theme;
-  } else {
-    delete document.documentElement.dataset.theme;
-  }
-}
-
-document.getElementById('theme-toggle').addEventListener('click', () => {
-  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const current = document.documentElement.dataset.theme || (prefersDark ? 'dark' : 'light');
-  const next = current === 'dark' ? 'light' : 'dark';
-  applyTheme(next);
-  localStorage.setItem(THEME_KEY, next);
-});
-
-applyTheme(localStorage.getItem(THEME_KEY));
-
 // ==================== Scroll Helpers ====================
 function isScrolledToBottom() {
   const container = document.getElementById('messages');
