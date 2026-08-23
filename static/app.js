@@ -27,6 +27,7 @@ async function api(method, path, body = null) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(detail.detail || 'Request failed');
   }
+  if (res.status === 204) return null;
   return res.json();
 }
 
@@ -203,6 +204,7 @@ async function switchRoom(roomId, roomName) {
   document.getElementById('current-room').textContent = '#' + roomName;
   document.getElementById('message-input').disabled = false;
   document.getElementById('send-btn').disabled = false;
+  document.getElementById('exit-room-btn').disabled = false;
 
   // Clear messages and online users
   document.getElementById('messages').innerHTML = '';
@@ -218,6 +220,66 @@ async function switchRoom(roomId, roomName) {
   renderRooms();
   closeSidebar();
 }
+
+async function exitRoom(roomId, roomName) {
+  if (!confirm(`Leave #${roomName}? You'll need to rejoin to send messages here.`)) return;
+
+  // Close the WebSocket first. The server-side disconnect handler publishes
+  // a "leave" event and updates presence, so other clients in the room see
+  // us depart in real time — we don't need a separate pub/sub call.
+  if (state.ws) {
+    state.ws.onclose = null;
+    state.ws.onmessage = null;
+    state.ws.close();
+    state.ws = null;
+  }
+
+  // Reset all local chat state — we're no longer viewing any room.
+  state.currentRoomId = null;
+  state.onlineUsers.clear();
+  state.myTypingActive = false;
+  if (state.myTypingTimer) { clearTimeout(state.myTypingTimer); state.myTypingTimer = null; }
+  state.typingTimeouts.forEach(t => clearTimeout(t));
+  state.typingTimeouts.clear();
+  state.oldestMessageId = null;
+  cancelReply();
+
+  document.getElementById('messages').innerHTML = '';
+  document.getElementById('typing-indicator').classList.add('hidden');
+  document.getElementById('load-more-wrap').classList.add('hidden');
+  document.getElementById('current-room').textContent = 'Select a room';
+  document.getElementById('member-count').textContent = '';
+  document.getElementById('message-input').disabled = true;
+  document.getElementById('send-btn').disabled = true;
+  document.getElementById('exit-room-btn').disabled = true;
+  renderOnlineList();
+
+  // Remove the membership row. This is what makes "exit" different from
+  // just switching rooms: the room will no longer show as joined.
+  try {
+    await api('POST', `/api/rooms/${roomId}/leave`);
+  } catch (err) {
+    toast('Failed to leave room: ' + err.message, true);
+  }
+
+  // Update local state: mark the room as not-a-member, and drop private
+  // rooms from the sidebar entirely (they're invisible to non-members).
+  const room = state.rooms.find(r => r.id === roomId);
+  if (room) {
+    room.is_member = false;
+    if (room.is_private) {
+      state.rooms = state.rooms.filter(r => r.id !== roomId);
+    }
+  }
+  renderRooms();
+  closeSidebar();
+}
+
+document.getElementById('exit-room-btn').addEventListener('click', () => {
+  if (state.currentRoomId == null) return;
+  const room = state.rooms.find(r => r.id === state.currentRoomId);
+  if (room) exitRoom(room.id, room.name);
+});
 
 // ==================== Messages ====================
 async function loadMessages(roomId, before = null) {

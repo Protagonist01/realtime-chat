@@ -465,6 +465,20 @@ input:focus-visible {
   white-space: nowrap;
 }
 
+.exit-room-btn {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.exit-room-btn:hover:not(:disabled) {
+  color: #e5484d;
+  border-color: #e5484d;
+  background: rgba(229, 72, 77, 0.08);
+}
+.exit-room-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* Load more */
 .load-more-wrap {
   padding: 8px 20px;
