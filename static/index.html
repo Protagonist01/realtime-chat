@@ -70,6 +70,12 @@
     </aside>
 
     <main id="chat-main">
+      <div id="chat-empty" class="chat-empty">
+        <div class="chat-empty-icon">&gt;_</div>
+        <p class="chat-empty-text">Select a room to start chatting</p>
+      </div>
+
+      <div id="chat-content" class="chat-content hidden">
       <div id="room-header" class="room-header">
         <button id="sidebar-toggle" class="btn-icon-subtle mobile-only" title="Open menu" aria-label="Open menu">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -112,6 +118,7 @@
         <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" disabled>
         <button type="submit" class="btn-primary" id="send-btn" disabled>Send</button>
       </form>
+      </div>
     </main>
   </div>
 

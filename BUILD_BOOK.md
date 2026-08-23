@@ -7,6 +7,7 @@ A journal of the real reasoning behind this build: decisions, options rejected, 
 - [Entry 3 — Presence tracking: why a Redis SET isn't enough for multi-tab](#entry-3--presence-tracking-why-a-redis-set-isnt-enough-for-multi-tab)
 - [Entry 4 — Multi-worker test: proving pub/sub actually crosses processes](#entry-4--multi-worker-test-proving-pubsub-actually-crosses-processes)
 - [Entry 5 — Deployment: choosing a free tier that actually supports WebSockets](#entry-5--deployment-choosing-a-free-tier-that-actually-supports-websockets)
+- [Entry 6 — Exit room: the bug that was three bugs](#entry-6--exit-room-the-bug-that-was-three-bugs)
 
 ## Entry 1 — Connection management across workers: why a dict isn't enough
 **Files touched:** `app/connection_manager.py`, `app/pubsub.py`, `app/redis_client.py`, `app/routers/chat.py`, `app/main.py`
@@ -368,5 +369,60 @@ Render terminates TLS at their proxy, so the page loads over HTTPS and the WebSo
 
 ### What went wrong
 Couldn't verify the Docker build locally because Docker Desktop kept stopping (the `docker build` command failed with "cannot find the file specified" for the Docker Desktop pipe). The Dockerfile is a standard Python slim image with pip install — there's nothing exotic that would fail to build. The plan is to verify the build on Render's CI directly, which builds from the GitHub repo. If the build fails on Render, the error will be in the build logs and likely a missing system dependency for a C extension (unlikely given pre-built wheels, but possible for `bcrypt` on certain architectures).
+
+## Entry 6 — Exit room: the bug that was three bugs
+**Files touched:** `app/routers/rooms.py`, `static/app.js`, `static/index.html`, `static/style.css`, `tests/leave_test.py`
+
+### Context
+The request was to add an "exit room" feature so users aren't silently member of every room they've ever clicked. A REST `POST /api/rooms/{id}/leave` endpoint already existed (`rooms.py:145`) and removed the membership row — but no UI called it, and it didn't close the WebSocket or update presence in real time. The plan was frontend-only: close the WS first (firing the existing disconnect handler that publishes `leave` + `presence` events), then call the REST endpoint to remove the membership row. No backend changes should have been needed. But when I tested it, three separate bugs surfaced — one of which predated the feature by who knows how long.
+
+### Before you read on
+A user creates a room, then clicks it in the sidebar. The WebSocket throws an error and the online list shows people who aren't online. Where would you look first — the WebSocket handler, the presence tracker, or the room creation endpoint? And: when you switch from room A to room B, what happens to room A's WebSocket's `onmessage` callback if you close the socket but don't null it out? Sketch the event ordering before reading on.
+
+### Options considered
+- **Handle exit entirely server-side via a new WS "exit" command** — client sends `{"type": "exit"}`, server removes membership and closes the socket → rejected because it duplicates the REST endpoint's logic and requires the WS handler (which opens short-lived `AsyncSessionLocal()` calls) to also manage room membership, mixing concerns.
+- **Publish a `leave`/`presence` event from the REST `leave_room` endpoint** — so other clients see the user depart even if their WS isn't open → rejected for the common case because the WS disconnect handler already does this, and wiring `app.state.pubsub_bridge` + `app.state.presence` into the REST router (they're process-singletons on `app.state`, not injected) added complexity for a race the WS close already handles.
+- **Chosen: close WS first, then call REST** — the WS `finally` block in `chat.py:171-184` publishes `leave` and updates `presence` on disconnect. By closing the socket before calling the REST endpoint, other clients see the departure in real time through the existing code path. The REST call just removes the DB row. No backend changes needed (or so I thought).
+
+### Why
+The existing disconnect handler already does the real-time work: it publishes a `leave` event and, if the user's last local connection closed, calls `presence.user_disconnected` and publishes the updated `presence` event (Entry 3). So the frontend just needs to trigger that path by closing the socket, then remove the membership row. The ordering matters: close WS *first* (so the disconnect handler runs while the user is still technically a member — the handler doesn't check membership, it just publishes), then remove the row. If you did it the other way, the WS would close, the disconnect handler would fire, and everything would look the same — but there's no practical difference since the handler doesn't re-check membership. The real reason for WS-first is simpler: it gives immediate UI feedback (the socket closes, local state resets) without waiting for the REST round-trip.
+
+### How to build it
+
+**The `exitRoom` function (in `static/app.js`):**
+1. `confirm("Leave #roomName?")` — the user asked for confirmation, same as switching into a non-member room now does.
+2. Null out `state.ws.onclose`, `.onmessage`, `.onerror` *before* calling `state.ws.close()`. This is the fix for the stale-events bug (see below). Then close and null the WS.
+3. Reset all local chat state: `currentRoomId = null`, clear `onlineUsers`, typing timeouts, `oldestMessageId`, reply preview. Show the empty state (hide `#chat-content`, show `#chat-empty`). Disable the input, send button, and exit button.
+4. `await api('POST', /api/rooms/${roomId}/leave)` — removes the membership row. The `api()` helper needed a one-line fix: `if (res.status === 204) return null;` before `return res.json()`, because the leave endpoint returns 204 No Content and `res.json()` on an empty body throws.
+5. Update local state: set `room.is_member = false`, and if the room is private, remove it from `state.rooms` entirely (private rooms are invisible to non-members — `list_rooms` wouldn't return it on next fetch).
+6. `renderRooms()` to update the sidebar.
+
+**The confirmation-before-join change (also in `switchRoom`):** When clicking a non-member room, `switchRoom` now calls `confirm("Join #roomName?")` before hitting the join endpoint. If the user cancels, the function returns early — no join, no WS, no state change.
+
+**The empty-state UI (in `index.html` + `style.css`):** Split `#chat-main` into two children: `#chat-empty` (a centered ">_" prompt and "Select a room to start chatting") and `#chat-content` (the room header, messages, typing indicator, message form). On load, `#chat-empty` is visible and `#chat-content` is `hidden`. `switchRoom` toggles them: shows content, hides empty. `exitRoom` toggles back. The `.chat-content` wrapper is `display: flex; flex-direction: column; height: 100%` so the inner layout (messages flex-grow, form pinned to bottom) works exactly as before.
+
+**How I verified it worked.** `tests/leave_test.py` — a new test using `fakeredis` (since no real Redis was available on this machine). It swaps `app.main.redis_client` for `fakeredis.FakeAsyncRedis(decode_responses=True)` *before* the uvicorn server starts, then:
+1. Registers alice + bob, creates a room, bob joins.
+2. Both open WebSockets — asserts both appear in `presence`.
+3. Bob "exits": closes his WS, then calls `POST /leave` (asserts 204).
+4. Asserts alice receives a `leave` event and a `presence` event with bob gone.
+5. Asserts `GET /api/rooms` shows `is_member=false` for bob.
+6. Asserts bob's WS is rejected with HTTP 403 (the `_is_member` check in `chat_ws` fires before `ws.accept()`, so Starlette sends a 403 handshake rejection, not a 4403 close code — see below).
+7. Asserts bob can re-join and reopen the WS (exit is not a ban).
+All 7 assertions pass.
+
+### What went wrong
+
+**Bug 1 — `create_room` returned `is_member = False` for the creator.** This was the root cause of the "WebSocket error on room creation" report. In `rooms.py:92`, the code was:
+```python
+return _room_out(room, {user.id})   # WRONG: passes user's id, not room's id
+```
+`_room_out` checks `room.id in my_ids`. So it was checking `room.id in {user.id}` — true only if the room's ID happened to equal the user's ID (almost never). The frontend received `is_member=false`, tried to call `POST /join`, got 400 "Already a member" (because `create_room` does insert the membership row), and the WS never connected. The fix was one character: `{room.id}`. This bug predated the exit-room feature — it was hiding in plain sight because the smoke test created the room and immediately used the `room_id` from the response, never checking `is_member`.
+
+**Bug 2 — Stale WebSocket events from the old room.** This was the "listing people who aren't online" report. In `switchRoom`, the old WS was closed with `state.ws.close()` but its `onmessage` handler was still attached. The browser fires `onmessage` for any events already in the buffer before the close completes. So a `presence` event from room A (with room A's online users) could fire *after* room B's WS connected, calling `updateOnlineUsers` and overwriting room B's online list with room A's. The fix: null out `onclose`, `onmessage`, and `onerror` *before* calling `close()`. This is a general lesson: `WebSocket.close()` is not instantaneous — it sends a close frame and waits for the peer's close frame. Events queued before that handshake still fire.
+
+**Bug 3 — The `api()` helper couldn't handle 204 No Content.** `res.json()` on an empty response body throws `SyntaxError: Unexpected end of JSON input`. The leave endpoint returns 204 (standard for "action succeeded, no body needed"). Fix: `if (res.status === 204) return null;` before the `.json()` call.
+
+**Diagnosis order:** I chased the "WS error" first, assuming it was a server-side WS issue. Read `chat.py`, saw the membership check, went back to `create_room`, spotted `{user.id}` vs `{room.id}`. ~10 minutes. The "offline users showing as online" was the misleading one — I initially suspected the Redis presence hashes weren't being cleaned up (stale data in Redis). But the presence tracker's `HINCRBY -1` + `HDEL` logic was correct (verified in the leave test). The real cause was client-side: old WS events firing on the new room. ~20 minutes of reading `app.js` line by line before spotting that `onmessage` wasn't nulled.
 
 

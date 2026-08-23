@@ -172,8 +172,13 @@ document.getElementById('create-room-form').addEventListener('submit', async (e)
 });
 
 async function switchRoom(roomId, roomName) {
-  // Close old WS and clear stale typing state
+  // Close old WS and clear stale typing state. Null out handlers first
+  // so buffered events from the old room can't fire onmessage and
+  // overwrite the new room's presence/messages.
   if (state.ws) {
+    state.ws.onclose = null;
+    state.ws.onmessage = null;
+    state.ws.onerror = null;
     state.ws.close();
     state.ws = null;
   }
@@ -187,9 +192,10 @@ async function switchRoom(roomId, roomName) {
   document.getElementById('typing-indicator').classList.add('hidden');
   cancelReply();
 
-  // If not a member yet, join first
+  // If not a member yet, ask for confirmation before joining
   let room = state.rooms.find(r => r.id === roomId);
   if (!room || !room.is_member) {
+    if (!confirm(`Join #${roomName}?`)) return;
     try {
       room = await api('POST', `/api/rooms/${roomId}/join`);
       const idx = state.rooms.findIndex(r => r.id === roomId);
@@ -201,6 +207,8 @@ async function switchRoom(roomId, roomName) {
   }
 
   state.currentRoomId = roomId;
+  document.getElementById('chat-empty').classList.add('hidden');
+  document.getElementById('chat-content').classList.remove('hidden');
   document.getElementById('current-room').textContent = '#' + roomName;
   document.getElementById('message-input').disabled = false;
   document.getElementById('send-btn').disabled = false;
@@ -247,6 +255,8 @@ async function exitRoom(roomId, roomName) {
   document.getElementById('messages').innerHTML = '';
   document.getElementById('typing-indicator').classList.add('hidden');
   document.getElementById('load-more-wrap').classList.add('hidden');
+  document.getElementById('chat-empty').classList.remove('hidden');
+  document.getElementById('chat-content').classList.add('hidden');
   document.getElementById('current-room').textContent = 'Select a room';
   document.getElementById('member-count').textContent = '';
   document.getElementById('message-input').disabled = true;

@@ -424,6 +424,34 @@ input:focus-visible {
   min-width: 0;
 }
 
+.chat-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-muted);
+}
+.chat-empty-icon {
+  font-family: 'Space Mono', monospace;
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+.chat-empty-text {
+  font-size: 14px;
+  margin: 0;
+}
+
+.chat-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
 .room-header {
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);

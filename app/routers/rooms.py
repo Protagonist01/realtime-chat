@@ -89,7 +89,7 @@ async def create_room(
     await db.execute(room_members.insert().values(user_id=user.id, room_id=room.id))
     await db.commit()
     await db.refresh(room)
-    return _room_out(room, {user.id})
+    return _room_out(room, {room.id})
 
 
 @router.get("", response_model=list[RoomOut])
