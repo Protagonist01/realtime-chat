@@ -370,8 +370,8 @@ Render terminates TLS at their proxy, so the page loads over HTTPS and the WebSo
 ### What went wrong
 Couldn't verify the Docker build locally because Docker Desktop kept stopping (the `docker build` command failed with "cannot find the file specified" for the Docker Desktop pipe). The Dockerfile is a standard Python slim image with pip install — there's nothing exotic that would fail to build. The plan is to verify the build on Render's CI directly, which builds from the GitHub repo. If the build fails on Render, the error will be in the build logs and likely a missing system dependency for a C extension (unlikely given pre-built wheels, but possible for `bcrypt` on certain architectures).
 
-## Entry 6 — Exit room: the bug that was three bugs
-**Files touched:** `app/routers/rooms.py`, `static/app.js`, `static/index.html`, `static/style.css`, `tests/leave_test.py`
+## Entry 6 — Exit room: the bug that was four bugs
+**Files touched:** `app/routers/rooms.py`, `app/main.py`, `static/app.js`, `static/index.html`, `static/style.css`, `tests/leave_test.py`
 
 ### Context
 The request was to add an "exit room" feature so users aren't silently member of every room they've ever clicked. A REST `POST /api/rooms/{id}/leave` endpoint already existed (`rooms.py:145`) and removed the membership row — but no UI called it, and it didn't close the WebSocket or update presence in real time. The plan was frontend-only: close the WS first (firing the existing disconnect handler that publishes `leave` + `presence` events), then call the REST endpoint to remove the membership row. No backend changes should have been needed. But when I tested it, three separate bugs surfaced — one of which predated the feature by who knows how long.
@@ -397,9 +397,15 @@ The existing disconnect handler already does the real-time work: it publishes a 
 5. Update local state: set `room.is_member = false`, and if the room is private, remove it from `state.rooms` entirely (private rooms are invisible to non-members — `list_rooms` wouldn't return it on next fetch).
 6. `renderRooms()` to update the sidebar.
 
-**The confirmation-before-join change (also in `switchRoom`):** When clicking a non-member room, `switchRoom` now calls `confirm("Join #roomName?")` before hitting the join endpoint. If the user cancels, the function returns early — no join, no WS, no state change.
+**The confirmation-before-join change:** The first iteration used `confirm("Join #roomName?")` — a browser dialog. The user rejected this: they wanted a proper in-UI "Join Room" button, and the chat window must not appear until they click it. So `switchRoom` was refactored into a 3-state UI:
 
-**The empty-state UI (in `index.html` + `style.css`):** Split `#chat-main` into two children: `#chat-empty` (a centered ">_" prompt and "Select a room to start chatting") and `#chat-content` (the room header, messages, typing indicator, message form). On load, `#chat-empty` is visible and `#chat-content` is `hidden`. `switchRoom` toggles them: shows content, hides empty. `exitRoom` toggles back. The `.chat-content` wrapper is `display: flex; flex-direction: column; height: 100%` so the inner layout (messages flex-grow, form pinned to bottom) works exactly as before.
+1. **`#chat-empty`** — no room selected (">_" placeholder, "Select a room to start chatting").
+2. **`#chat-join`** — room selected but not a member (room name, "You're not a member yet", and a "Join Room" button). The chat window (messages, input, exit button) is completely hidden.
+3. **`#chat-content`** — room selected and joined (room header, messages, typing indicator, message form).
+
+`switchRoom` now splits into `switchRoom` (closes old WS, decides which state to show) and `openRoom` (loads messages, connects WS, shows content). A separate `joinRoom` function is wired to the "Join Room" button — it calls `POST /join`, updates `state.rooms`, then calls `openRoom`. Only after the join succeeds does the chat window appear. The user explicitly clicks a button; there's no auto-join on room click.
+
+**The empty-state UI (in `index.html` + `style.css`):** `#chat-main` has three children: `#chat-empty`, `#chat-join`, and `#chat-content`. Only one is visible at a time. `.chat-content` is `display: flex; flex-direction: column; height: 100%` so the inner layout (messages flex-grow, form pinned to bottom) works exactly as before. `.chat-join` and `.chat-empty` are centered flex layouts.
 
 **How I verified it worked.** `tests/leave_test.py` — a new test using `fakeredis` (since no real Redis was available on this machine). It swaps `app.main.redis_client` for `fakeredis.FakeAsyncRedis(decode_responses=True)` *before* the uvicorn server starts, then:
 1. Registers alice + bob, creates a room, bob joins.
@@ -423,6 +429,15 @@ return _room_out(room, {user.id})   # WRONG: passes user's id, not room's id
 
 **Bug 3 — The `api()` helper couldn't handle 204 No Content.** `res.json()` on an empty response body throws `SyntaxError: Unexpected end of JSON input`. The leave endpoint returns 204 (standard for "action succeeded, no body needed"). Fix: `if (res.status === 204) return null;` before the `.json()` call.
 
-**Diagnosis order:** I chased the "WS error" first, assuming it was a server-side WS issue. Read `chat.py`, saw the membership check, went back to `create_room`, spotted `{user.id}` vs `{room.id}`. ~10 minutes. The "offline users showing as online" was the misleading one — I initially suspected the Redis presence hashes weren't being cleaned up (stale data in Redis). But the presence tracker's `HINCRBY -1` + `HDEL` logic was correct (verified in the leave test). The real cause was client-side: old WS events firing on the new room. ~20 minutes of reading `app.js` line by line before spotting that `onmessage` wasn't nulled.
+**Bug 4 — Stale presence in Redis across server restarts.** After the stale-WS-events fix (Bug 2), users were *still* showing as online. The real cause this time: Redis persists across app restarts, but presence is ephemeral. When the server is killed (crash, `kill -9`, dev restart via `Stop-Process`), WebSocket `finally` blocks don't run — the presence hash fields stay in Redis with count > 0, showing dead users as "online" indefinitely. The JWT token expiry (60 minutes, `config.py:9`) was a red herring the user suspected — the token only gates new connections, not existing presence state. Fix: on startup, before creating the `PresenceTracker`, scan and delete all `presence:count:room:*` and `presence:names:room:*` keys. This is the "garbage collection on boot" pattern — any presence from a previous run is definitionally stale because no WebSocket is connected to claim it. With `fakeredis` (in-memory), this is a no-op (fresh instance per process); with real Redis, it's the difference between a clean restart and ghost users.
+
+```python
+stale = await redis_client.keys("presence:count:room:*")
+stale.extend(await redis_client.keys("presence:names:room:*"))
+if stale:
+    await redis_client.delete(*stale)
+```
+
+**Diagnosis order:** I chased the "WS error" first, assuming it was a server-side WS issue. Read `chat.py`, saw the membership check, went back to `create_room`, spotted `{user.id}` vs `{room.id}`. ~10 minutes. The "offline users showing as online" was the misleading one — I initially suspected the Redis presence hashes weren't being cleaned up (stale data in Redis). But the presence tracker's `HINCRBY -1` + `HDEL` logic was correct (verified in the leave test). The real cause was client-side: old WS events firing on the new room. ~20 minutes of reading `app.js` line by line before spotting that `onmessage` wasn't nulled. After that fix, the user *still* saw stale users — which turned out to be the server-restart issue (Bug 4), the exact thing I'd initially suspected but dismissed because fakeredis doesn't persist. The lesson: the first hypothesis was right, just for the wrong reason.
 
 

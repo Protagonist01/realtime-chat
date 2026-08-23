@@ -192,22 +192,27 @@ async function switchRoom(roomId, roomName) {
   document.getElementById('typing-indicator').classList.add('hidden');
   cancelReply();
 
-  // If not a member yet, ask for confirmation before joining
-  let room = state.rooms.find(r => r.id === roomId);
+  state.currentRoomId = roomId;
+  renderRooms();
+  closeSidebar();
+
+  const room = state.rooms.find(r => r.id === roomId);
   if (!room || !room.is_member) {
-    if (!confirm(`Join #${roomName}?`)) return;
-    try {
-      room = await api('POST', `/api/rooms/${roomId}/join`);
-      const idx = state.rooms.findIndex(r => r.id === roomId);
-      if (idx >= 0) state.rooms[idx] = room; else state.rooms.push(room);
-    } catch (err) {
-      toast('Cannot join room: ' + err.message, true);
-      return;
-    }
+    // Show the join-room view — chat window stays hidden until they join
+    document.getElementById('chat-empty').classList.add('hidden');
+    document.getElementById('chat-content').classList.add('hidden');
+    document.getElementById('chat-join').classList.remove('hidden');
+    document.getElementById('join-room-name').textContent = '#' + roomName;
+    return;
   }
 
-  state.currentRoomId = roomId;
+  // Member: open the chat window
+  await openRoom(roomId, roomName);
+}
+
+async function openRoom(roomId, roomName) {
   document.getElementById('chat-empty').classList.add('hidden');
+  document.getElementById('chat-join').classList.add('hidden');
   document.getElementById('chat-content').classList.remove('hidden');
   document.getElementById('current-room').textContent = '#' + roomName;
   document.getElementById('message-input').disabled = false;
@@ -226,8 +231,26 @@ async function switchRoom(roomId, roomName) {
   // Connect WebSocket
   connectWS(roomId);
   renderRooms();
-  closeSidebar();
 }
+
+async function joinRoom() {
+  const roomId = state.currentRoomId;
+  if (roomId == null) return;
+  const room = state.rooms.find(r => r.id === roomId);
+  const roomName = room ? room.name : '';
+  try {
+    const joined = await api('POST', `/api/rooms/${roomId}/join`);
+    const idx = state.rooms.findIndex(r => r.id === roomId);
+    if (idx >= 0) state.rooms[idx] = joined; else state.rooms.push(joined);
+  } catch (err) {
+    toast('Cannot join room: ' + err.message, true);
+    return;
+  }
+  renderRooms();
+  await openRoom(roomId, roomName);
+}
+
+document.getElementById('join-room-btn').addEventListener('click', joinRoom);
 
 async function exitRoom(roomId, roomName) {
   if (!confirm(`Leave #${roomName}? You'll need to rejoin to send messages here.`)) return;
@@ -256,6 +279,7 @@ async function exitRoom(roomId, roomName) {
   document.getElementById('typing-indicator').classList.add('hidden');
   document.getElementById('load-more-wrap').classList.add('hidden');
   document.getElementById('chat-empty').classList.remove('hidden');
+  document.getElementById('chat-join').classList.add('hidden');
   document.getElementById('chat-content').classList.add('hidden');
   document.getElementById('current-room').textContent = 'Select a room';
   document.getElementById('member-count').textContent = '';

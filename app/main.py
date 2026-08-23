@@ -22,6 +22,14 @@ app.include_router(chat.router)
 @app.on_event("startup")
 async def on_startup() -> None:
     await init_db()
+    # Clear stale presence from any previous server run. Redis persists
+    # across app restarts; presence is ephemeral — any leftover entries
+    # from unclean shutdowns (crash, kill -9) are garbage that would
+    # show disconnected users as "online."
+    stale = await redis_client.keys("presence:count:room:*")
+    stale.extend(await redis_client.keys("presence:names:room:*"))
+    if stale:
+        await redis_client.delete(*stale)
     app.state.connection_manager = ConnectionManager()
     app.state.pubsub_bridge = PubSubBridge(redis_client, app.state.connection_manager)
     app.state.presence = PresenceTracker(redis_client)
