@@ -1,8 +1,11 @@
 // ==================== State ====================
-const token = localStorage.getItem('token');
+// Session storage ends the browser session instead of persisting JWTs indefinitely.
+localStorage.removeItem('token');
+localStorage.removeItem('username');
+const token = sessionStorage.getItem('token');
 const state = {
   token: token,
-  username: localStorage.getItem('username'),
+  username: sessionStorage.getItem('username'),
   userId: null,
   currentRoomId: null,
   ws: null,
@@ -16,6 +19,11 @@ const state = {
 };
 
 // ==================== API Helpers ====================
+function errorText(detail, fallback = 'Request failed') {
+  if (Array.isArray(detail)) return detail.map(error => error.msg).join('; ');
+  return typeof detail === 'string' ? detail : fallback;
+}
+
 async function api(method, path, body = null) {
   const headers = { 'Authorization': `Bearer ${state.token}` };
   if (body) {
@@ -24,8 +32,9 @@ async function api(method, path, body = null) {
   }
   const res = await fetch(path, { method, headers, body });
   if (!res.ok) {
+    if (res.status === 401 && state.token) signOut();
     const detail = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(detail.detail || 'Request failed');
+    throw new Error(errorText(detail.detail));
   }
   if (res.status === 204) return null;
   return res.json();
@@ -35,7 +44,7 @@ async function apiForm(method, path, formData) {
   const res = await fetch(path, { method, body: formData });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(detail.detail || 'Request failed');
+    throw new Error(errorText(detail.detail));
   }
   return res.json();
 }
@@ -78,10 +87,12 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   try {
     const fd = new FormData(form);
     const data = await apiForm('POST', '/api/auth/login', fd);
-    localStorage.setItem('token', data.access_token);
+    sessionStorage.setItem('token', data.access_token);
     state.token = data.access_token;
-    state.username = form.username.value;
-    localStorage.setItem('username', state.username);
+    const user = await api('GET', '/api/auth/me');
+    state.username = user.username;
+    state.userId = user.id;
+    sessionStorage.setItem('username', state.username);
     showChat();
   } catch (err) {
     errEl.textContent = err.message;
@@ -94,20 +105,21 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
   const form = e.target;
   const errEl = document.getElementById('auth-error');
   try {
-    await api('POST', '/api/auth/register', {
+    const user = await api('POST', '/api/auth/register', {
       username: form.username.value,
       email: form.email.value,
       password: form.password.value,
     });
     // Auto-login after register
     const fd = new FormData();
-    fd.append('username', form.username.value);
+    fd.append('username', user.username);
     fd.append('password', form.password.value);
     const data = await apiForm('POST', '/api/auth/login', fd);
-    localStorage.setItem('token', data.access_token);
+    sessionStorage.setItem('token', data.access_token);
     state.token = data.access_token;
-    state.username = form.username.value;
-    localStorage.setItem('username', state.username);
+    state.username = user.username;
+    state.userId = user.id;
+    sessionStorage.setItem('username', state.username);
     showChat();
   } catch (err) {
     errEl.textContent = err.message;
@@ -115,15 +127,37 @@ document.getElementById('register-form').addEventListener('submit', async (e) =>
   }
 });
 
-document.getElementById('logout-btn').addEventListener('click', () => {
-  if (state.ws) state.ws.close();
-  localStorage.removeItem('token');
-  localStorage.removeItem('username');
+function signOut() {
+  if (state.ws) {
+    state.ws.onmessage = null;
+    state.ws.onclose = null;
+    state.ws.onerror = null;
+    state.ws.close();
+    state.ws = null;
+  }
+  sessionStorage.removeItem('token');
+  sessionStorage.removeItem('username');
   state.token = null;
   state.username = null;
+  state.userId = null;
   state.currentRoomId = null;
+  state.rooms = [];
+  state.onlineUsers.clear();
+  state.myTypingActive = false;
+  for (const timer of state.typingTimeouts.values()) clearTimeout(timer);
+  state.typingTimeouts.clear();
+  clearTimeout(state.myTypingTimer);
+  document.getElementById('messages').replaceChildren();
+  document.getElementById('chat-empty').classList.remove('hidden');
+  document.getElementById('chat-join').classList.add('hidden');
+  document.getElementById('chat-content').classList.add('hidden');
+  document.getElementById('typing-indicator').classList.add('hidden');
+  renderOnlineList();
+  cancelReply();
+  closeSidebar();
   showAuth();
-});
+}
+document.getElementById('logout-btn').addEventListener('click', signOut);
 
 // ==================== Rooms ====================
 async function loadRooms() {
@@ -214,7 +248,7 @@ async function openRoom(roomId, roomName) {
   document.getElementById('chat-empty').classList.add('hidden');
   document.getElementById('chat-join').classList.add('hidden');
   document.getElementById('chat-content').classList.remove('hidden');
-  document.getElementById('current-room').textContent = '#' + roomName;
+  document.getElementById('current-room').textContent = roomName;
   document.getElementById('message-input').disabled = false;
   document.getElementById('send-btn').disabled = false;
   document.getElementById('exit-room-btn').disabled = false;
@@ -323,24 +357,23 @@ async function loadMessages(roomId, before = null) {
     const msgs = await api('GET', path);
     const container = document.getElementById('messages');
 
-    // API returns newest-first (id DESC). Capture the oldest message ID
-    // for cursor-based pagination BEFORE reversing for display.
+    if (state.currentRoomId !== roomId) return;
+    // The API returns each page oldest-first. Its first ID is the next cursor.
     const originalLength = msgs.length;
-    const oldestId = originalLength > 0 ? msgs[originalLength - 1].id : null;
+    const oldestId = originalLength > 0 ? msgs[0].id : null;
 
     if (before) {
-      // Prepend older messages (reverse to get oldest-first for DOM order)
+      // Prepend the whole page without reversing chronological order.
       const scrollHeightBefore = container.scrollHeight;
-      const reversed = [...msgs].reverse();
-      for (const msg of reversed) {
-        const el = renderMessage(msg, container.firstElementChild);
-        container.prepend(el);
+      const page = document.createDocumentFragment();
+      for (const msg of msgs) {
+        page.appendChild(renderMessage(msg, page.lastElementChild));
       }
+      container.prepend(page);
       // Maintain scroll position
       container.scrollTop += container.scrollHeight - scrollHeightBefore;
     } else {
-      const reversed = [...msgs].reverse();
-      for (const msg of reversed) {
+      for (const msg of msgs) {
         const el = renderMessage(msg, container.lastElementChild);
         container.appendChild(el);
       }
@@ -468,18 +501,24 @@ function formatTime(iso) {
 // ==================== WebSocket ====================
 function connectWS(roomId) {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${proto}//${window.location.host}/ws/chat/${roomId}?token=${state.token}`;
+  const url = `${proto}//${window.location.host}/ws/chat/${roomId}`;
   state.ws = new WebSocket(url);
 
-  state.ws.onopen = () => {};
+  const socket = state.ws;
+  socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: state.token }));
 
   state.ws.onmessage = (evt) => {
     const event = JSON.parse(evt.data);
     handleEvent(event);
   };
 
-  state.ws.onclose = () => {
-    // Could implement reconnect here
+  state.ws.onclose = (event) => {
+    if (event.code === 4401) {
+      signOut();
+      toast('Your session expired. Please sign in again.', true);
+    } else {
+      toast('Chat disconnected. Select the room again to reconnect.', true);
+    }
   };
 
   state.ws.onerror = () => {
@@ -658,7 +697,9 @@ function closeSidebar() {
   document.getElementById('sidebar-overlay')?.classList.remove('open');
 }
 
-document.getElementById('sidebar-toggle')?.addEventListener('click', openSidebar);
+for (const id of ['sidebar-toggle', 'sidebar-toggle-empty', 'sidebar-toggle-join']) {
+  document.getElementById(id)?.addEventListener('click', openSidebar);
+}
 document.getElementById('sidebar-close')?.addEventListener('click', closeSidebar);
 document.getElementById('sidebar-overlay')?.addEventListener('click', closeSidebar);
 
@@ -668,4 +709,3 @@ if (state.token && state.username) {
 } else {
   showAuth();
 }
-

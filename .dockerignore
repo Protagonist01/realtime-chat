@@ -1,6 +1,6 @@
 __pycache__/
 *.pyc
-.env
+.env*
 chat.db
 chat.db-journal
 server.log
@@ -13,3 +13,15 @@ docker-compose.yml
 BUILD_BOOK.md
 .pytest_cache/
 .venv/
+.kilo/
+output/
+artifacts/
+.ruff_cache/
+*.db
+*.db-*
+*.log
+requirements-dev.*
+docs/
+.github/
+.playwright-cli/
+.playwright/

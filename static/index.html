@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Real-time rooms, message replies and live presence. A FastAPI, Redis and Celery chat project.">
   <title>realtime.chat</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Nunito:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -26,15 +28,15 @@
       </div>
 
       <form id="login-form" class="auth-form">
-        <input type="text" name="username" placeholder="username" autocomplete="username" required>
-        <input type="password" name="password" placeholder="password" autocomplete="current-password" required>
+        <input type="text" name="username" placeholder="username or email" aria-label="Username or email" autocomplete="username" required>
+        <input type="password" name="password" placeholder="password" aria-label="Password" autocomplete="current-password" required>
         <button type="submit" class="btn-primary">Sign in</button>
       </form>
 
       <form id="register-form" class="auth-form hidden">
-        <input type="text" name="username" placeholder="username (3+ chars)" autocomplete="username" required>
-        <input type="email" name="email" placeholder="email" autocomplete="email" required>
-        <input type="password" name="password" placeholder="password (6+ chars)" autocomplete="new-password" required>
+        <input type="text" name="username" placeholder="username (3+ chars)" aria-label="Username" autocomplete="username" minlength="3" maxlength="50" required>
+        <input type="email" name="email" placeholder="email" aria-label="Email" autocomplete="email" required>
+        <input type="password" name="password" placeholder="password (6+ chars, max 72 bytes)" aria-label="Password" autocomplete="new-password" minlength="6" maxlength="72" required>
         <button type="submit" class="btn-primary">Create account</button>
       </form>
 
@@ -58,8 +60,8 @@
         <div class="section-label">Rooms</div>
         <div id="room-list" class="room-list"></div>
         <form id="create-room-form" class="create-room-form">
-          <input type="text" id="room-name-input" placeholder="new room name" minlength="3" required>
-          <button type="submit" class="btn-icon" title="Create room">+</button>
+          <input type="text" id="room-name-input" placeholder="new room name" aria-label="New room name" minlength="3" maxlength="100" required>
+          <button type="submit" class="btn-icon" title="Create room" aria-label="Create room">+</button>
         </form>
       </div>
 
@@ -73,6 +75,7 @@
       <div id="chat-empty" class="chat-empty">
         <div class="chat-empty-icon">&gt;_</div>
         <p class="chat-empty-text">Select a room to start chatting</p>
+        <button id="sidebar-toggle-empty" class="btn-ghost mobile-only" type="button">Browse rooms</button>
       </div>
 
       <div id="chat-join" class="chat-join hidden">
@@ -81,6 +84,7 @@
           <h2 id="join-room-name" class="chat-join-name">room</h2>
           <p class="chat-join-text">You're not a member of this room yet.</p>
           <button id="join-room-btn" class="btn-primary">Join Room</button>
+          <button id="sidebar-toggle-join" class="btn-ghost mobile-only" type="button">Browse rooms</button>
         </div>
       </div>
 
@@ -124,7 +128,7 @@
       </div>
 
       <form id="message-form" class="message-form">
-        <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" disabled>
+        <input type="text" id="message-input" placeholder="Type a message..." aria-label="Message" maxlength="4000" autocomplete="off" disabled>
         <button type="submit" class="btn-primary" id="send-btn" disabled>Send</button>
       </form>
       </div>

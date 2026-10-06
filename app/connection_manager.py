@@ -17,6 +17,7 @@ iteration raises ``RuntimeError: Set changed size during iteration``.
 """
 
 from fastapi import WebSocket
+from starlette.websockets import WebSocketState
 
 from app.schemas import ChatEvent
 
@@ -26,7 +27,8 @@ class ConnectionManager:
         self._rooms: dict[int, dict[int, set[WebSocket]]] = {}
 
     async def connect(self, room_id: int, user_id: int, ws: WebSocket) -> None:
-        await ws.accept()
+        if ws.application_state == WebSocketState.CONNECTING:
+            await ws.accept()
         self._rooms.setdefault(room_id, {}).setdefault(user_id, set()).add(ws)
 
     def disconnect(self, room_id: int, user_id: int, ws: WebSocket) -> None:
@@ -36,17 +38,24 @@ class ConnectionManager:
         sockets = users.get(user_id)
         if sockets is None:
             return
-        sockets.discard(ws)
+        sockets.discard(
+            ws
+        )  #  Unlike .remove(), .discard() won't crash if the socket is already gone
         if not sockets:
-            users.pop(user_id, None)
+            users.pop(
+                user_id, None
+            )  # Memory cleanup. If the user has no active connections left (all tabs closed), it removes the user entirely from the room dictionary.
         if not users:
-            self._rooms.pop(room_id, None)
+            self._rooms.pop(
+                room_id, None
+            )  # More memory cleanup. If there are no users left in the entire room, it removes the room entirely from the master tracking dictionary to save RAM.
 
     async def broadcast(self, room_id: int, event: ChatEvent) -> None:
         users = self._rooms.get(room_id)
         if not users:
             return
-        payload = event.model_dump_json()
+        payload = event.model_dump_json()  # Converts the Pydantic message object into a clean JSON string just once, rather than re-processing it for every individual user loop.
+
         # Snapshot to avoid "set changed size during iteration" if a socket
         # dies while we're mid-broadcast.
         for sockets in list(users.values()):
@@ -61,6 +70,17 @@ class ConnectionManager:
     def has_local_clients(self, room_id: int) -> bool:
         users = self._rooms.get(room_id)
         return bool(users) and any(len(s) > 0 for s in users.values())
+
+    async def close_user(self, room_id: int, user_id: int, code: int = 4403) -> None:
+        for ws in list(self._rooms.get(room_id, {}).get(user_id, set())):
+            try:
+                await ws.close(code=code)
+            except Exception:
+                pass
+
+    async def close_room(self, room_id: int, code: int = 1011) -> None:
+        for user_id in list(self._rooms.get(room_id, {})):
+            await self.close_user(room_id, user_id, code)
 
     def local_user_ids(self, room_id: int) -> set[int]:
         users = self._rooms.get(room_id, {})

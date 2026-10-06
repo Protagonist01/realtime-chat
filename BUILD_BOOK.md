@@ -8,6 +8,9 @@ A journal of the real reasoning behind this build: decisions, options rejected, 
 - [Entry 4 — Multi-worker test: proving pub/sub actually crosses processes](#entry-4--multi-worker-test-proving-pubsub-actually-crosses-processes)
 - [Entry 5 — Deployment: choosing a free tier that actually supports WebSockets](#entry-5--deployment-choosing-a-free-tier-that-actually-supports-websockets)
 - [Entry 6 — Exit room: the bug that was three bugs](#entry-6--exit-room-the-bug-that-was-three-bugs)
+- [Entry 7 — Adding Celery without putting chat delivery on a queue](#entry-7--adding-celery-without-putting-chat-delivery-on-a-queue)
+
+- [Entry 8 — Portfolio audit: real process tests, expiring presence and durable deployment](#entry-8--portfolio-audit-real-process-tests-expiring-presence-and-durable-deployment)
 
 ## Entry 1 — Connection management across workers: why a dict isn't enough
 **Files touched:** `app/connection_manager.py`, `app/pubsub.py`, `app/redis_client.py`, `app/routers/chat.py`, `app/main.py`
@@ -441,3 +444,71 @@ if stale:
 **Diagnosis order:** I chased the "WS error" first, assuming it was a server-side WS issue. Read `chat.py`, saw the membership check, went back to `create_room`, spotted `{user.id}` vs `{room.id}`. ~10 minutes. The "offline users showing as online" was the misleading one — I initially suspected the Redis presence hashes weren't being cleaned up (stale data in Redis). But the presence tracker's `HINCRBY -1` + `HDEL` logic was correct (verified in the leave test). The real cause was client-side: old WS events firing on the new room. ~20 minutes of reading `app.js` line by line before spotting that `onmessage` wasn't nulled. After that fix, the user *still* saw stale users — which turned out to be the server-restart issue (Bug 4), the exact thing I'd initially suspected but dismissed because fakeredis doesn't persist. The lesson: the first hypothesis was right, just for the wrong reason.
 
 
+## Entry 7 — Adding Celery without putting chat delivery on a queue
+**Files touched:** `app/celery_app.py`, `app/tasks.py`, `app/routers/reports.py`, `app/config.py`, `requirements.txt`, `README.md`, `REDIS_CELERY_TUTORIAL.md`
+
+### Context
+The chat already uses Redis pub/sub for live delivery, but has no background job worker. The user asked for a tutorial and a working Celery integration that can be adapted to other projects. A room statistics report is a useful small job: it reads stored messages, returns a result, and has no external service dependency. While documenting scale, I found that the presence claims in Entries 3 and 6 need correction: the current connect and disconnect calls are asymmetric for multiple tabs, and clearing all presence keys at each worker startup can erase live users from other workers. The new tutorial marks both as limitations rather than repeating those earlier claims.
+
+### Before you read on
+If a report takes several seconds, where should its database query run? If it runs in a Celery worker, how will the web process enqueue it and later read the result? What must be shared between those processes?
+
+### Options considered
+- **Run the report inside a FastAPI request or `BackgroundTasks`** — simple, but it is tied to the web process and gives no independent worker to scale or restart.
+- **Send report requests through the existing pub/sub channel** — subscribers only receive messages while connected; this is unsuitable for jobs that must wait for a worker.
+- **Chosen: Celery with Redis as broker and result backend** — the API queues a room ID, a separate worker queries the shared database, and the API can poll a short-lived result.
+
+### Why
+The two Redis uses solve different problems. Pub/sub broadcasts one event to every currently listening web process. The Celery broker holds a job until one worker claims it. Keeping separate Redis logical databases for pub/sub, broker, and results makes keys easier to inspect, though pub/sub channels remain server-wide and still need namespacing. The report task is read-only, which also makes retry and duplicate execution safe for the example.
+
+### How to build it
+1. Add `celery[redis]` to dependencies and broker/result URLs to settings. Keep the existing `REDIS_URL` for pub/sub; give the broker and result backend their own URLs ending in `/1` and `/2` locally.
+2. Create one Celery app module and register `app.tasks` explicitly. Give tasks JSON serialization, a one-hour result lifetime, and a low prefetch count so long jobs do not pile up on one worker.
+3. In `app/tasks.py`, define a synchronous Celery task accepting only `room_id: int`. It calls a short async database helper using `asyncio.run`, creates and disposes its own SQLAlchemy engine, and returns JSON-friendly counts. Passing an ID, rather than a SQLAlchemy model or socket, lets a separate process reproduce the query.
+4. Add authenticated POST and GET endpoints. POST checks room membership before queuing. GET checks membership again and returns the job state; only a successful result matching the requested room is returned.
+5. Run Redis, the FastAPI server, and a Celery worker as separate processes. Check that POST returns a task ID before the result appears, then poll GET until success. Stop the worker and repeat to observe a queued task waiting for it.
+
+### What went wrong
+Docker Desktop was not running, so a real Redis service was unavailable for the three-process check. I ran `python -m pytest tests/celery_reports_test.py -q` instead: the test passed using Celery eager mode and fake Redis ownership storage. I also tried a separate Celery worker against fakeredis's TCP test server, but it did not complete within the test window; that is not evidence that a real Redis deployment succeeds or fails. The tutorial gives the exact real-Redis manual check to run when Docker or a Redis service is available.
+
+## Entry 8 — Portfolio audit: real process tests, expiring presence and durable deployment
+**Date:** 2026-10-06
+**Files touched:** `app/presence.py`, `app/routers/chat.py`, `app/main.py`, `app/security.py`, `migrations/`, `docker-compose.yml`, `render.yaml`, `tests/test_*.py`, `.github/workflows/ci.yml`
+
+### Context
+The recruiter-readiness audit found that Entry 4's two servers shared one global app object: starting the second server replaced the first server's connection manager. It did not prove delivery across OS processes. This entry also supersedes Entry 6's deletion of all presence on startup and Entry 5's temporary SQLite deployment. Existing Celery work remains in place.
+
+### Before you read on
+If one worker crashes while another still has connected users, how can presence expire without erasing those users? How would you prove your answer using processes rather than objects in one Python interpreter?
+
+### Options considered
+- Keep shared counters and clear them at startup — rejected because a worker restart erases other workers' live state.
+- Use expiring records per socket — chosen so disconnect removes exactly one connection, and crashes need no global cleanup.
+- Keep SQLite in the free Render container — rejected because redeploys discard its files and a separate Celery worker cannot access that file.
+- Use shared PostgreSQL for hosted API and worker — chosen; the checked-in Blueprint provisions paid resources and must be reviewed before applying.
+
+### Why
+A lease describes one connection's right to appear online for 60 seconds. Every 20 seconds the server renews it. Redis Lua prunes expired records, updates one connection and returns the users in one atomic operation. Separate processes share database rows and Redis messages but keep separate connection managers.
+
+### How to build it
+1. Store a sorted set `<namespace>:presence:{<room_id>}:leases` whose members are connection UUIDs and scores are expiry times. Store UUID-to-`[user_id, username]` JSON in the matching names hash. Use one Lua script to prune expired UUIDs from both keys, add or remove one UUID, and return the remaining names. Add key TTLs so abandoned rooms also disappear.
+2. Generate a UUID per accepted socket. Renew its lease in a cancellable heartbeat task. Always cancel that task and remove the exact lease in the endpoint's `finally` block; if Redis is unavailable, expiry is the fallback. Never delete other workers' presence at boot.
+3. Check membership both before connecting and before each command. Leaving a room publishes a membership-revocation event; each subscriber closes that user's local sockets. Heartbeats check membership and JWT expiry again.
+4. Use Alembic for production schema changes. Run migrations once before deployment with `AUTO_CREATE_DB=false`. Local development can still create tables automatically. Do not stamp an existing database without backing it up and checking its schema.
+5. Start two independent `python -m uvicorn` subprocesses in tests, connected to the same isolated PostgreSQL database and Redis namespace. Connect Alice before starting worker B, then connect Bob to B and test message delivery, replies, presence and membership revocation. Start a separate Celery worker and poll its real result.
+6. Install runtime dependencies from `requirements.txt` and test tools from `requirements-dev.txt`. The `.in` files describe allowed updates; regenerate both locks with the documented uv commands.
+
+### What went wrong
+The first dependency audit found vulnerable `python-jose` and its `ecdsa` dependency, with no fixed versions reported. The app only signs HS256 JWTs, so I switched to PyJWT and retained the same claims and explicit algorithm restriction. The complete verification results will be recorded in `docs/audit.md`.
+
+
+### Final diagnosis and verification
+Windows reserved ports caused the first container and subprocess attempts to fail before application behavior could be checked. I used explicit free host ports for the isolated Compose project and aligned subprocess port selection with Uvicorn's reuse behavior. Waiting for Redis's subscription acknowledgment also closes the first-event race: writing SUBSCRIBE alone is not evidence the listener is ready.
+
+The final review found escaped template expressions in `migrations/script.py.mako`. Existing migration tests could still pass because they never created a new revision. Removing the escapes and adding a test that generates and parses a revision verifies the developer workflow too.
+
+The browser's mobile room-menu button originally existed only inside the selected-room view. A fresh mobile login therefore could not select its first room. Add menu access to the empty and join views, then verify navigation from a fresh login. Clear the room view and presence when signing out so a second account cannot see stale client state.
+
+The complete real-service test run passed 23 tests. The later migration-template regression check and existing migration test both passed; the current suite now contains 24 tests. Ruff and dependency audits passed. A Python 3.13 container running as UID 10001 completed authentication, socket messaging and a report in a separate Celery worker. Its saved message survived forced API recreation. Desktop and mobile screenshots were inspected. GitHub recorded success for the current remote revision, but these changes remain local and the new CI workflow has not run there. The owner's live-URL exclusion is preserved. Full evidence and limits are in [docs/audit.md](docs/audit.md).
+
+The final browser reload exposed a contract mismatch: the API already returns each page oldest-first, but the client reversed it again and selected its last ID as the oldest cursor. Keep each page in order, prepend older pages as a DocumentFragment, and choose the first ID for the next cursor. The browser confirmed IDs [1, 2], cursor 1 and canonical username alice after email login; signing out left zero visible messages and no selected room. Guard the fetch response when the selected room changes before it arrives.

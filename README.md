@@ -1,184 +1,153 @@
-# Real-time Chat Service
+# Real-time Chat
 
-A production-grade real-time chat backend built with FastAPI, WebSockets, and Redis pub/sub. Features JWT authentication, cross-process message delivery, presence tracking, and typing indicators.
+A backend portfolio project showing how independent FastAPI workers share live chat events through Redis, while PostgreSQL stores messages and Celery processes room reports.
 
-## Architecture
+**Python 3.12+ · FastAPI · SQLAlchemy · Redis · PostgreSQL · Celery · WebSockets**
 
-```
-┌──────────────┐     ┌──────────────┐
-│  Uvicorn A   │     │  Uvicorn B   │     (N workers)
-│              │     │              │
-│  ┌────────┐  │     │  ┌────────┐  │
-│  │ WS     │  │     │  │ WS     │  │   In-process ConnectionManager
-│  │ clients│  │     │  │ clients│  │   {room_id: {user_id: set[WebSocket]}}
-│  └───┬────┘  │     │  └───┬────┘  │
-│      │       │     │      │       │
-│  ┌───▼────┐  │     │  ┌───▼────┐  │
-│  │PubSub  │  │     │  │PubSub  │  │   Per-room subscriber task
-│  │Bridge  │  │     │  │Bridge  │  │   (refcounted, auto sub/unsub)
-│  └───┬────┘  │     │  └───▲────┘  │
-│      │       │     │      │       │
-└──────┼───────┘     └──────┼───────┘
-       │                     │
-       ▼                     │
-   ┌─────────────────────────────┐
-   │         Redis               │
-   │   channel: chat:room:{id}   │   Single source of truth
-   │   hash:   presence:room:... │   for cross-process state
-   └─────────────────────────────┘
-```
+[Architecture](docs/architecture.md) · [Deployment](docs/deployment.md) · [Audit evidence](docs/audit.md) · [Build Book](BUILD_BOOK.md) · [Redis and Celery tutorial](REDIS_CELERY_TUTORIAL.md)
 
-**Key design decisions:**
+![Working desktop chat interface](docs/images/chat-desktop.png)
 
-- **Redis pub/sub with per-room channels** — each worker subscribes only to rooms where it has local clients. Messages published to `chat:room:{id}` are received by every worker with a client in that room.
-- **Single delivery code path** — the publisher never broadcasts to its own sockets directly. It publishes to Redis, its own subscriber picks the event back up, and broadcasts locally. The sender's clients receive messages through the same path as everyone else's.
-- **Refcounted subscriptions** — one subscriber task per room per process, not one per WebSocket. A counter tracks how many local sockets are in a room; when it hits zero, the Redis subscription is torn down.
-- **Cross-process presence** — Redis `HINCRBY` counters per `(room_id, user_id)` handle multi-tab and multi-worker correctly. A user is removed from the online list only when their last connection closes across all processes.
-- **JWT auth on WebSocket** — browsers can't set custom headers on `new WebSocket()`, so the token is passed via query string (`?token=...`). Auth happens before the socket is accepted.
+[Mobile screenshot](docs/images/chat-mobile.png)
 
-## Features
+## What this project demonstrates
 
-- **Real-time messaging** — WebSocket-based, sub-second delivery via Redis pub/sub
-- **JWT authentication** — register, login, token-protected REST + WS endpoints
-- **Room management** — create rooms, join/leave, public/private rooms with membership enforcement
-- **Presence** — see who's online in each room, updated in real-time across all workers
-- **Typing indicators** — ephemeral events, no persistence, client-side timeout
-- **Message history** — cursor-based pagination via `?before=<message_id>&limit=N`
-- **Multi-worker ready** — tested with two separate uvicorn instances proving cross-process delivery
+- **Distributed delivery:** one Redis subscriber per active room per API process. The sender receives its message through the same Redis path as other users.
+- **Access control:** JWT authentication, membership checks, private-room protection, and socket revocation when a user leaves.
+- **Connection lifecycle:** multiple tabs per user, expiring presence leases, heartbeat renewal, subscription cleanup and bounded commands.
+- **Persistent history:** cursor pagination, replies with quoted context, and database migrations.
+- **Background work:** a separate Celery worker reads the shared database; authenticated users can queue and poll their own room statistics jobs.
+- **Repeatable delivery:** locked dependencies, a non-root Docker image, a complete Compose stack and GitHub Actions checks.
 
-## Tech Stack
+This is a demonstrable engineering project with documented limits, rather than a claim of unlimited production scale. See [tradeoffs and failure behavior](docs/architecture.md#tradeoffs-and-limits).
 
-| Layer | Technology |
-|-------|-----------|
-| Framework | FastAPI + Starlette WebSockets |
-| ASGI server | Uvicorn |
-| Database | SQLAlchemy 2.0 async + SQLite (swap to Postgres via `DATABASE_URL`) |
-| Pub/sub | Redis (`redis.asyncio`) |
-| Auth | python-jose (JWT) + bcrypt (password hashing) |
-| Validation | Pydantic v2 + pydantic-settings |
-| Frontend | Vanilla JS + CSS (served as static files from FastAPI) |
-| Deploy | Dockerfile + render.yaml |
+## Run in Docker
 
-## Project Structure
+Install Docker Desktop with Linux containers, then:
 
-```
-app/
-  main.py               # FastAPI app, startup/shutdown lifecycle
-  config.py             # pydantic-settings (env-driven config)
-  database.py           # async SQLAlchemy engine + session factory
-  models.py             # User, Room, Message, room_members
-  schemas.py            # Pydantic request/response models + ChatEvent
-  security.py           # bcrypt hashing + JWT encode/decode
-  deps.py               # get_current_user dependency
-  redis_client.py       # shared redis.asyncio client
-  connection_manager.py # in-process WebSocket registry
-  pubsub.py             # Redis pub/sub bridge (refcounted subscribers)
-  presence.py           # cross-process presence via Redis HINCRBY
-  routers/
-    auth.py             # /api/auth/register, /login
-    rooms.py            # /api/rooms CRUD, join/leave, message history
-    chat.py             # /ws/chat/{room_id} WebSocket endpoint
-static/
-  index.html            # chat UI
-  style.css             # Tokyo Night-inspired dark theme
-  app.js                # WS client, event handling, typing, presence
-tests/
-  smoke_test.py         # end-to-end: 2 users, WS, pub/sub, presence, typing
-  pagination_test.py    # cursor-based message pagination
-  multiworker_test.py   # cross-process delivery (2 uvicorn instances)
-  docker_test.py        # end-to-end against Docker container
-```
+~~~bash
+docker compose up -d --build --wait
+~~~
 
-## Quick Start
+Open [the chat UI](http://localhost:8000), [interactive API docs](http://localhost:8000/docs) or [readiness](http://localhost:8000/ready).
 
-### Prerequisites
+Compose starts PostgreSQL, Redis, a one-time migration service, the API and a Celery worker. The database and Redis use named volumes. Ports are bound to localhost. Compose credentials are local development defaults; hosted services must use generated secrets.
 
-- Python 3.13+
-- Docker (for Redis)
+Stop services with `docker compose down`. Use `docker compose down --volumes` only when you intend to erase the local database and queue.
 
-### Run locally
+If a port is busy or reserved, set `WEB_PORT`, `POSTGRES_PORT` or `REDIS_PORT` before starting Compose. Defaults are 8000, 5433 and 6380.
 
-```bash
-# Start Redis
-docker compose up -d
+## Try it in two minutes
 
-# Install dependencies
-pip install -r requirements.txt
+1. Register Alice in one browser session. Create a public room named `engineering`.
+2. Register Bob in a second browser session or private window. Select and join the room.
+3. Send messages, reply to one, and watch typing and presence updates.
+4. Open another Alice tab. Closing one tab should leave Alice online while the other stays connected.
+5. Leave the room as Bob. His membership and active sockets are revoked; he can explicitly rejoin a public room.
+6. In `/docs`, authorize with a login token, create a statistics job and poll its task ID.
 
-# Run the server
-uvicorn app.main:app --reload
+Private rooms are currently owner-only: there is no invitation API yet. Public rooms and their history are visible to authenticated users.
 
-# Open the chat UI
-# http://127.0.0.1:8000
-```
+## Run Python locally
 
-### Run tests
+Start only the supporting Redis service:
 
-```bash
-# All tests start uvicorn in-process — no separate server needed
-python tests/smoke_test.py          # end-to-end: register, WS, message, typing, presence
-python tests/pagination_test.py     # cursor-based pagination
-python tests/multiworker_test.py    # cross-process pub/sub delivery
-```
+~~~bash
+docker compose up -d redis
+python -m venv .venv
+~~~
 
-## API Reference
+Activate the environment: `.venv\Scripts\Activate.ps1` on PowerShell, or `source .venv/bin/activate` on macOS/Linux.
 
-### Auth
+Copy `.env.example` to `.env` (`Copy-Item .env.example .env` on PowerShell; `cp .env.example .env` on macOS/Linux), then:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/auth/register` | Register a new user (username, email, password) |
-| POST | `/api/auth/login` | Login, returns JWT (OAuth2PasswordRequestForm) |
+~~~bash
+python -m pip install -r requirements-dev.txt
+python -m uvicorn app.main:app --reload --ws-max-size 20000
+~~~
 
-### Rooms
+This path uses a local SQLite file. For room reports, start a separate worker from the same directory:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/rooms` | Create a room (creator auto-joins) |
-| GET | `/api/rooms` | List rooms you're a member of |
-| GET | `/api/rooms/{id}` | Get room details |
-| POST | `/api/rooms/{id}/join` | Join a room |
-| POST | `/api/rooms/{id}/leave` | Leave a room |
-| GET | `/api/rooms/{id}/messages` | Message history (`?limit=50&before=<id>`) |
+~~~bash
+# Windows: use --pool=solo
+python -m celery -A app.celery_app:celery_app worker --loglevel=INFO --pool=solo
+~~~
 
-### WebSocket
+On Linux, omit `--pool=solo` for Celery's default process pool. Use PostgreSQL when API and worker run on separate machines.
 
-```
-ws://host/ws/chat/{room_id}?token=<JWT>
-```
+## Verification
 
-**Incoming (client → server):**
-```json
-{"type": "message", "content": "hello"}
-{"type": "typing"}
-```
+~~~bash
+python -m pytest -q
+python -m ruff check app tests/test_*.py tests/conftest.py tests/celery_reports_test.py tests/process_helpers.py migrations
+python -m ruff format --check app tests/test_*.py tests/conftest.py tests/celery_reports_test.py tests/process_helpers.py migrations
+python -m pip_audit -r requirements.txt --no-deps --disable-pip
+~~~
 
-**Outgoing (server → client):**
-```json
-{"type": "message", "room_id": 1, "username": "alice", "content": "hello", "message_id": 42, "created_at": "..."}
-{"type": "join", "room_id": 1, "username": "bob"}
-{"type": "leave", "room_id": 1, "username": "bob"}
-{"type": "typing", "room_id": 1, "username": "alice"}
-{"type": "presence", "room_id": 1, "online_users": {"1": "alice", "2": "bob"}}
-{"type": "error", "room_id": 1, "content": "Invalid message payload"}
-```
+The default suite uses temporary SQLite databases and fake Redis. The two real-process tests skip until isolated PostgreSQL and Redis URLs are supplied. CI supplies both and runs the full suite on Python 3.12 and 3.13.
 
-## Configuration
+For a full local run, start `docker compose up -d postgres redis`, then set:
 
-Environment variables (see `.env.example`):
+~~~dotenv
+TEST_REDIS_URL=redis://127.0.0.1:6380/0
+TEST_POSTGRES_URL=postgresql+asyncpg://chat:chat@127.0.0.1:5433/chat
+~~~
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `JWT_SECRET` | `dev-secret` | Secret for signing JWTs — **change in production** |
-| `JWT_ALGORITHM` | `HS256` | JWT algorithm |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Token expiry |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./chat.db` | SQLAlchemy async URL |
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL |
+Set these in your shell before `python -m pytest -q`; the tests create and delete uniquely named databases. Point them at disposable development services with permission to create databases. Existing `chat.db` is never used by the pytest suite.
 
-## Deployment
+The older `smoke_test.py`, `pagination_test.py`, `replies_test.py`, `leave_test.py` and `docker_test.py` scripts are historical manual checks. Prefer pytest, which isolates data and is run in CI. `multiworker_test.py` now delegates to the real-process test.
 
-The app is containerized and deploy-ready. See `Dockerfile`, `render.yaml`, and `BUILD_BOOK.md` Entry 5 for the full deployment guide (Render + Upstash Redis).
+## API and WebSocket contract
 
-## Build Book
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/api/auth/register` | Register; passwords are 6+ characters and at most 72 UTF-8 bytes |
+| POST | `/api/auth/login` | OAuth2 form login using username or email |
+| GET | `/api/auth/me` | Authenticated user identity |
+| POST / GET | `/api/rooms` | Create a room / discover accessible rooms |
+| GET | `/api/rooms/{id}` | Room details and membership status |
+| POST | `/api/rooms/{id}/join` | Join a public room; owners may rejoin their private room |
+| POST | `/api/rooms/{id}/leave` | Revoke membership and close existing sockets |
+| GET | `/api/rooms/{id}/messages?limit=50&before=42` | Cursor-based history, oldest first within each page |
+| POST | `/api/rooms/{id}/statistics-jobs` | Queue a room report; returns 202 and a task ID |
+| GET | `/api/rooms/{id}/statistics-jobs/{task_id}` | Poll a job owned by the requesting room member |
+| GET | `/health` / `/ready` | Process liveness / database and Redis readiness |
 
-See [`BUILD_BOOK.md`](BUILD_BOOK.md) for the engineering journal — architecture decisions, bugs hit during development, and how they were diagnosed. Written as the work happened, not backfilled.
+Connect to `/ws/chat/{room_id}`, then send an authentication frame within five seconds:
+
+~~~json
+{"type":"auth","token":"<access_token>"}
+~~~
+
+Once the server sends presence, commands are:
+
+~~~json
+{"type":"message","content":"hello"}
+{"type":"message","content":"a reply","reply_to_id":42}
+{"type":"typing"}
+~~~
+
+Events include `message`, `typing`, `join`, `leave`, `presence` and `error`. Message events carry the saved ID, timestamp, author and optional reply context. Presence maps user IDs to usernames. See `app/schemas.py` for fields.
+
+Existing API clients may still use `?token=...`. The browser uses the first-frame flow to avoid putting credentials in connection URLs. Use HTTPS/WSS for hosted traffic. Tokens expire after 60 minutes by default; clients must sign in again.
+
+## Configuration and dependencies
+
+`.env.example` lists local settings. Production requires `ENVIRONMENT=production`, a random `JWT_SECRET` of at least 32 characters and `AUTO_CREATE_DB=false`. Use `python -m alembic upgrade head` before startup. PostgreSQL URLs from providers are normalized to the async driver format.
+
+`REDIS_NAMESPACE` separates room channels, presence, rate limits and Celery keys between environments. Set explicit database, Redis, broker and result URLs for each deployment. Authentication is limited to 20 attempts per client IP per minute; reports to 5 jobs per user per minute; socket commands to 30 per second per connection. Configure trusted proxy addresses before relying on client-IP limits.
+
+`requirements.in` and `requirements-dev.in` specify allowed versions; generated `.txt` files pin the resolved dependencies. To update with [uv](https://docs.astral.sh/uv/pip/compile/):
+
+~~~bash
+uv pip compile requirements.in -o requirements.txt --python-version 3.13 --universal
+uv pip compile requirements-dev.in -o requirements-dev.txt --python-version 3.13 --universal
+~~~
+
+Run the full checks after updates. Runtime images install only `requirements.txt`.
+
+## Deployment and license
+
+The Render Blueprint includes PostgreSQL, Redis, API and worker services and provisions **paid resources**. Review [deployment instructions](docs/deployment.md) and provider pricing before applying it. No live deployment is claimed by this repository.
+
+[MIT License](LICENSE).

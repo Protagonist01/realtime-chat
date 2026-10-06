@@ -1,52 +1,79 @@
 import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 
+from app.config import settings
 from app.connection_manager import ConnectionManager
-from app.database import init_db
+from app.database import engine, init_db
 from app.presence import PresenceTracker
 from app.pubsub import PubSubBridge
 from app.redis_client import redis_client
-from app.routers import auth, chat, rooms
+from app.routers import auth, chat, reports, rooms
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Real-time Chat", version="0.2.0")
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if settings.auto_create_db:
+        await init_db()
+    await redis_client.ping()
+    app.state.connection_manager = ConnectionManager()
+    app.state.redis_client = redis_client
+    app.state.pubsub_bridge = PubSubBridge(redis_client, app.state.connection_manager)
+    app.state.presence = PresenceTracker(redis_client)
+    try:
+        yield
+    finally:
+        await app.state.pubsub_bridge.shutdown()
+        await redis_client.aclose()
+        await engine.dispose()
+
+
+app = FastAPI(title="Real-time Chat", version="0.3.0", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(rooms.router)
 app.include_router(chat.router)
+app.include_router(reports.router)
 
 
-@app.on_event("startup")
-async def on_startup() -> None:
-    await init_db()
-    # Clear stale presence from any previous server run. Redis persists
-    # across app restarts; presence is ephemeral — any leftover entries
-    # from unclean shutdowns (crash, kill -9) are garbage that would
-    # show disconnected users as "online."
-    stale = await redis_client.keys("presence:count:room:*")
-    stale.extend(await redis_client.keys("presence:names:room:*"))
-    if stale:
-        await redis_client.delete(*stale)
-    app.state.connection_manager = ConnectionManager()
-    app.state.pubsub_bridge = PubSubBridge(redis_client, app.state.connection_manager)
-    app.state.presence = PresenceTracker(redis_client)
-
-
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
-    bridge: PubSubBridge = getattr(app.state, "pubsub_bridge", None)
-    if bridge is not None:
-        await bridge.shutdown()
-    await redis_client.aclose()
-
-
-@app.get("/health")
+@app.get("/health", tags=["operations"])
 async def health() -> dict:
+    """Liveness: the API process can respond."""
     return {"status": "ok"}
 
 
-# Static frontend — mounted after API routes so /api/* and /ws/* take precedence.
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+@app.get("/ready", tags=["operations"])
+async def ready() -> dict:
+    """Readiness: the database and live-chat Redis are reachable."""
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        await app.state.redis_client.ping()
+    except Exception:
+        logger.exception("Readiness check failed")
+        raise HTTPException(status_code=503, detail="Service dependencies unavailable") from None
+    return {"status": "ready"}
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if request.url.path.startswith("/api/auth"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+app.mount(
+    "/",
+    StaticFiles(directory=Path(__file__).resolve().parent.parent / "static", html=True),
+    name="static",
+)

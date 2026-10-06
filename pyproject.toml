@@ -1,0 +1,26 @@
+[project]
+name = "realtime-chat"
+version = "0.3.0"
+description = "FastAPI chat with Redis WebSocket fan-out and Celery room reports"
+requires-python = ">=3.12"
+readme = "README.md"
+license = "MIT"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "celery_reports_test.py"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra"
+timeout = 240
+markers = ["integration: requires isolated Redis and PostgreSQL services"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/conftest.py" = ["E402"]

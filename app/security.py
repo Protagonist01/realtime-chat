@@ -13,39 +13,38 @@ Switching to bcrypt directly (4 lines: hash + verify) sidesteps the whole
 compatibility problem and removes a stale, unmaintained dependency.
 """
 
-import bcrypt
+from datetime import datetime, timedelta, timezone
 
-# bcrypt has a 72-byte hard limit on input. We truncate to avoid the
-# ValueError from bcrypt 4.x+ on long passwords. 72 bytes of UTF-8 is
-# still ~72 characters in the common case, which is plenty for a password.
+import bcrypt
+import jwt
+
+from app.config import settings
+from app.schemas import TokenData
+
+# bcrypt has a 72-byte hard limit. Reject excess bytes instead of silently
+# treating different passwords with the same prefix as the same password.
 _MAX_BYTES = 72
 
 
-def _truncated(password: str) -> bytes:
+def _password_bytes(password: str) -> bytes:
     encoded = password.encode("utf-8")
-    return encoded[:_MAX_BYTES]
+    if len(encoded) > _MAX_BYTES:
+        raise ValueError("Password must be at most 72 UTF-8 bytes")
+    return encoded
 
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(_truncated(password), bcrypt.gensalt()).decode("utf-8")
+    return bcrypt.hashpw(_password_bytes(password), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     try:
-        return bcrypt.checkpw(_truncated(plain), hashed.encode("utf-8"))
+        return bcrypt.checkpw(_password_bytes(plain), hashed.encode("utf-8"))
     except ValueError:
         return False
 
 
 # ---------- JWT ----------
-from datetime import datetime, timedelta, timezone
-
-from jose import JWTError, jwt
-
-from app.config import settings
-from app.schemas import TokenData
-
-
 def create_access_token(user_id: int) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
     payload = {"sub": str(user_id), "exp": expire}
@@ -54,10 +53,15 @@ def create_access_token(user_id: int) -> str:
 
 def decode_access_token(token: str) -> TokenData | None:
     try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+            options={"require": ["exp", "sub"]},
+        )
         sub = payload.get("sub")
-        if sub is None:
+        if not isinstance(sub, str) or not sub.isdecimal() or int(sub) < 1:
             return None
         return TokenData(user_id=int(sub))
-    except (JWTError, ValueError):
+    except (jwt.InvalidTokenError, ValueError, TypeError):
         return None

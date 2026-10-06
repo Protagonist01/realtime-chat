@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 chat.db
 chat.db-journal
 __pycache__/
@@ -8,3 +10,17 @@ __pycache__/
 venv/
 server.log
 server.err
+.ruff_cache/
+*.db
+*.db-*
+*.log
+.kilo/
+output/
+artifacts/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+.playwright-cli/
+.playwright/

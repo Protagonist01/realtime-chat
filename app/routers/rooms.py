@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.deps import get_current_user
 from app.models import Message, Room, User, room_members
-from app.schemas import MessageOut, RoomCreate, RoomOut
+from app.schemas import ChatEvent, MessageOut, RoomCreate, RoomOut
 
 router = APIRouter(prefix="/api/rooms", tags=["rooms"])
 
@@ -21,9 +22,7 @@ async def _member_ids(db: AsyncSession, room_id: int) -> set[int]:
     ``room.members`` because the relationship is lazy-loaded: in async
     SQLAlchemy, touching a lazy relationship raises ``MissingGreenlet``.
     """
-    res = await db.scalars(
-        select(room_members.c.user_id).where(room_members.c.room_id == room_id)
-    )
+    res = await db.scalars(select(room_members.c.user_id).where(room_members.c.room_id == room_id))
     return set(res)
 
 
@@ -37,9 +36,7 @@ async def _is_member(db: AsyncSession, user_id: int, room_id: int) -> bool:
 
 
 async def _my_room_ids(db: AsyncSession, user_id: int) -> set[int]:
-    res = await db.scalars(
-        select(room_members.c.room_id).where(room_members.c.user_id == user_id)
-    )
+    res = await db.scalars(select(room_members.c.room_id).where(room_members.c.user_id == user_id))
     return set(res)
 
 
@@ -85,9 +82,13 @@ async def create_room(
         raise HTTPException(status_code=400, detail="Room name already taken")
     room = Room(name=payload.name, is_private=payload.is_private, created_by=user.id)
     db.add(room)
-    await db.flush()  # populate room.id
-    await db.execute(room_members.insert().values(user_id=user.id, room_id=room.id))
-    await db.commit()
+    try:
+        await db.flush()  # populate room.id
+        await db.execute(room_members.insert().values(user_id=user.id, room_id=room.id))
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Room name already taken") from None
     await db.refresh(room)
     return _room_out(room, {room.id})
 
@@ -105,9 +106,7 @@ async def list_rooms(
     from sqlalchemy import or_
 
     my_ids = await _my_room_ids(db, user.id)
-    res = await db.scalars(
-        select(Room).where(or_(Room.is_private.is_(False), Room.id.in_(my_ids)))
-    )
+    res = await db.scalars(select(Room).where(or_(Room.is_private.is_(False), Room.id.in_(my_ids))))
     return [_room_out(room, my_ids) for room in res]
 
 
@@ -136,8 +135,16 @@ async def join_room(
         raise HTTPException(status_code=404, detail="Room not found")
     if await _is_member(db, user.id, room_id):
         raise HTTPException(status_code=400, detail="Already a member")
-    await db.execute(room_members.insert().values(user_id=user.id, room_id=room_id))
-    await db.commit()
+    if room.is_private and room.created_by != user.id:
+        raise HTTPException(
+            status_code=403, detail="Private rooms cannot be joined without an invitation"
+        )
+    try:
+        await db.execute(room_members.insert().values(user_id=user.id, room_id=room_id))
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Already a member") from None
     await db.refresh(room)
     return _room_out(room, await _my_room_ids(db, user.id))
 
@@ -145,6 +152,7 @@ async def join_room(
 @router.post("/{room_id}/leave", status_code=status.HTTP_204_NO_CONTENT)
 async def leave_room(
     room_id: int,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
@@ -160,6 +168,9 @@ async def leave_room(
         )
     )
     await db.commit()
+    await request.app.state.pubsub_bridge.publish(
+        room_id, ChatEvent(type="membership_revoked", room_id=room_id, user_id=user.id)
+    )
 
 
 @router.get("/{room_id}/messages", response_model=list[MessageOut])
@@ -169,7 +180,7 @@ async def list_messages(
     before: int | None = Query(None, description="Return messages with id < before (cursor)"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> list[Message]:
+) -> list[MessageOut]:
     room = await db.get(Room, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
